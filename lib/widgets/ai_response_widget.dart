@@ -1,5 +1,6 @@
 import '../services/theme_service.dart';
 import '../utils/design_tokens.dart';
+import '../utils/latex_text.dart';
 import 'package:flutter/material.dart';
 import '../services/debug_log_service.dart';
 
@@ -52,6 +53,48 @@ class AiResponseWidget extends StatelessWidget {
       if (t.isEmpty) {
         i++;
         continue;
+      }
+      // 独立块级公式：$$ ... $$ 或 \[ ... \]（单行或多行）
+      if (t.startsWith(r'$$') || t.startsWith(r'\[')) {
+        final isDollar = t.startsWith(r'$$');
+        final closeDelim = isDollar ? r'$$' : r'\]';
+        final openLen = 2;
+        final sameLineClose = t.indexOf(closeDelim, openLen);
+        if (sameLineClose != -1 &&
+            sameLineClose + closeDelim.length == t.length) {
+          final tex = t.substring(openLen, sameLineClose).trim();
+          if (tex.isNotEmpty) {
+            blocks.add(_MathBlock(tex, t));
+            i++;
+            continue;
+          }
+        } else if (sameLineClose == -1) {
+          final buf = StringBuffer(t.substring(openLen));
+          var j = i + 1;
+          var found = false;
+          while (j < lines.length) {
+            final l = lines[j];
+            final closeIdx = l.indexOf(closeDelim);
+            if (closeIdx != -1) {
+              buf.writeln();
+              buf.write(l.substring(0, closeIdx));
+              found = true;
+              j++;
+              break;
+            }
+            buf.writeln();
+            buf.write(l);
+            j++;
+          }
+          if (found) {
+            final tex = buf.toString().trim();
+            if (tex.isNotEmpty) {
+              blocks.add(_MathBlock(tex, tex));
+              i = j;
+              continue;
+            }
+          }
+        }
       }
       // 表格块：| ... | 行 + 下一行分隔行 |---|
       if (t.startsWith('|') && i + 1 < lines.length &&
@@ -144,6 +187,19 @@ class AiResponseWidget extends StatelessWidget {
   // ======================== 块级渲染 ========================
 
   Widget _buildBlock(_Block block, TextStyle base, AppThemeColors ac) {
+    if (block is _MathBlock) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Center(
+          child: buildLatexMathWidget(
+            block.tex,
+            fallbackText: block.raw,
+            style: base,
+            display: true,
+          ),
+        ),
+      );
+    }
     if (block is _TableBlock) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 4),
@@ -223,9 +279,33 @@ class AiResponseWidget extends StatelessWidget {
     }
   }
 
-  /// 行内解析：**加粗**、`代码`、==蓝关键词==、!!红关键词!! 交替扫描。
-  /// 任一标记未闭合时，剩余内容按普通文本原样输出（容错）。
+  /// 行内解析：先切分 LaTeX 公式（避免公式内字符被 Markdown 误伤），
+  /// 再对文本段扫描 **加粗**、`代码`、==蓝关键词==、!!红关键词!!。
   List<InlineSpan> _inline(String s, TextStyle base, AppThemeColors ac) {
+    if (!mightContainLatex(s)) return _inlineMarkdown(s, base, ac);
+    final spans = <InlineSpan>[];
+    for (final seg in splitLatexSegments(s)) {
+      if (seg is LatexTextRun) {
+        spans.addAll(_inlineMarkdown(seg.text, base, ac));
+      } else if (seg is LatexMathRun) {
+        spans.add(WidgetSpan(
+          alignment: PlaceholderAlignment.middle,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 2),
+            child: buildLatexMathWidget(
+              seg.tex,
+              fallbackText: seg.raw,
+              style: base,
+              display: seg.display,
+            ),
+          ),
+        ));
+      }
+    }
+    return spans;
+  }
+
+  List<InlineSpan> _inlineMarkdown(String s, TextStyle base, AppThemeColors ac) {
     final spans = <InlineSpan>[];
     var i = 0;
     // 按优先级寻找最早的标记起点
@@ -336,6 +416,12 @@ class _TextLine {
 class _TableBlock extends _Block {
   final List<List<String>> rows;
   _TableBlock(this.rows);
+}
+
+class _MathBlock extends _Block {
+  final String tex;
+  final String raw;
+  _MathBlock(this.tex, this.raw);
 }
 
 /// 结构标签的样式描述（v1.28）

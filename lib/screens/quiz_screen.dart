@@ -75,6 +75,8 @@ class _QuizScreenState extends State<QuizScreen> {
   bool _inErrorBook = false;
   int? _lastQuestionId;
   bool _showAnalysis = false;
+  bool _subjectiveRevealed = false;
+  bool _showOptionalKeyboard = false;
   final Set<String> _selectedOptions = {};
   bool _isMemorizeMode = false;
   // 练习模式状态（v1.0.2 统一重构：练习能力内聚于本页）
@@ -991,14 +993,33 @@ class _QuizScreenState extends State<QuizScreen> {
   Widget _buildOptionsArea(
       AppState appState, Question question, AppThemeColors ac) {
     final qt = question.questionType;
-    if (qt == 'fill_blank') {
-      return _buildFillBlankInput(appState, ac);
-    }
     if (qt == 'true_false') {
       return _buildTrueFalseButtons(appState, ac);
     }
-    if (qt == 'ming_jie' || qt == 'jian_da' || qt == 'jie_da') {
-      return _buildTextAnswerInput(appState, ac, qt);
+    if (qt == 'fill_blank' ||
+        qt == 'ming_jie' ||
+        qt == 'jian_da' ||
+        qt == 'jie_da' ||
+        qt == 'recite') {
+      if (_showOptionalKeyboard && qt != 'recite') {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            qt == 'fill_blank'
+                ? _buildFillBlankInput(appState, ac)
+                : _buildTextAnswerInput(appState, ac, qt),
+            const SizedBox(height: 6),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: () => setState(() => _showOptionalKeyboard = false),
+                child: const Text('改用免打字自评'),
+              ),
+            ),
+          ],
+        );
+      }
+      return _buildNoKeyboardSubjectiveFlow(appState, question, ac);
     }
     final options = question.options;
     final isMulti = question.questionType == 'multi_choice';
@@ -1103,6 +1124,196 @@ class _QuizScreenState extends State<QuizScreen> {
       _selectedOptions.clear();
       _handleSubmitAnswer(appState, label);
     }
+  }
+
+  Widget _buildNoKeyboardSubjectiveFlow(
+      AppState appState, Question question, AppThemeColors ac) {
+    final isBigQuestion = question.questionType == 'jie_da';
+    if (!_subjectiveRevealed) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          MJSurface(
+            tone: MJTone.alt,
+            padding: const EdgeInsets.all(MaoSpace.sm),
+            child: Row(
+              children: [
+                Icon(
+                  isBigQuestion
+                      ? Icons.draw_outlined
+                      : Icons.lightbulb_outline,
+                  size: 16,
+                  color: ac.accent,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    isBigQuestion
+                        ? '可在纸上或右上角手写画板完成推导，写完后点击下方查看解析并自评'
+                        : '无需打字，先在脑海中回忆要点，点击下方核对答案',
+                    style: TextStyle(
+                        fontSize: MaoType.caption, color: ac.textSecondary),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: MaoSpace.sm),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.visibility_outlined),
+            label: Text(isBigQuestion ? '写完了，查看答案与解析' : '查看答案与解析'),
+            onPressed: () {
+              HapticFeedback.selectionClick();
+              setState(() => _subjectiveRevealed = true);
+              if (appState.currentAnalysis == null &&
+                  !appState.analysisLoading) {
+                unawaited(appState.loadCurrentAnalysis());
+              }
+            },
+          ),
+          const SizedBox(height: 4),
+          if (question.questionType != 'recite')
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: () => setState(() => _showOptionalKeyboard = true),
+                child: Text(
+                  '需要打字作答？',
+                  style: TextStyle(
+                      fontSize: MaoType.caption, color: ac.textSecondary),
+                ),
+              ),
+            ),
+        ],
+      );
+    }
+
+    final hasAnalysis = (question.analysis ?? '').trim().isNotEmpty ||
+        (appState.currentAnalysis ?? '').trim().isNotEmpty;
+    return _analysisTransition(
+      expanded: true,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: ac.accentSoft,
+              borderRadius: BorderRadius.circular(MaoRadius.control),
+              border: Border.all(color: ac.accent.withOpacity(0.45)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.check_circle_outline,
+                        color: ac.accent, size: 18),
+                    const SizedBox(width: 6),
+                    Text('参考答案',
+                        style: TextStyle(
+                            fontSize: MaoType.body,
+                            fontWeight: FontWeight.bold,
+                            color: ac.accent)),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                MjRichQuestionText(
+                  text: question.correctAnswer,
+                  images: question.images,
+                  style: TextStyle(
+                      fontSize: MaoType.h3,
+                      color: ac.textPrimary,
+                      height: 1.55),
+                ),
+                if (hasAnalysis) ...[
+                  const SizedBox(height: 10),
+                  const Divider(height: 1),
+                  const SizedBox(height: 8),
+                  AiResponseWidget(
+                    text: (appState.currentAnalysis ?? question.analysis ?? '')
+                        .trim(),
+                  ),
+                ] else if (appState.analysisLoading) ...[
+                  const SizedBox(height: 8),
+                  Text('正在加载解析...',
+                      style: TextStyle(
+                          fontSize: MaoType.caption,
+                          color: ac.textSecondary)),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: MaoSpace.sm),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () =>
+                      _handleSubjectiveSelfRating(appState, question, 'again'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: ac.danger,
+                    side: BorderSide(color: ac.danger),
+                  ),
+                  child: const Text('不会'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () =>
+                      _handleSubjectiveSelfRating(appState, question, 'hard'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: ac.warning,
+                    side: BorderSide(color: ac.warning),
+                  ),
+                  child: const Text('模糊'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () => _handleSubjectiveSelfRating(
+                      appState, question, 'mastered'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: ac.success,
+                    foregroundColor: ac.onAccent,
+                  ),
+                  child: const Text('稳了'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _handleSubjectiveSelfRating(
+      AppState appState, Question question, String rating) async {
+    HapticFeedback.selectionClick();
+    if (widget.quizMode == QuizMode.practice) {
+      final ans =
+          rating == 'mastered' ? question.correctAnswer : '[自评:$rating]';
+      _recordPracticeAnswer(appState, ans);
+      setState(() => _subjectiveRevealed = false);
+      return;
+    }
+    if (question.questionType == 'recite' && rating != 'mastered') {
+      _playSound('wrong.wav', appState);
+      setState(() {
+        _subjectiveRevealed = false;
+        _showAnalysis = false;
+        _showManualAnalysis = false;
+      });
+      await appState.requeueReciteQuestion(rating);
+      _scrollToTop();
+      return;
+    }
+    final ans =
+        rating == 'mastered' ? question.correctAnswer : '[自评:$rating]';
+    setState(() => _subjectiveRevealed = false);
+    await _handleSubmitAnswer(appState, ans);
   }
 
   Widget _buildFillBlankInput(AppState appState, AppThemeColors ac) {
@@ -1393,6 +1604,8 @@ class _QuizScreenState extends State<QuizScreen> {
     }
     _showAnalysis = false;
     _showManualAnalysis = false;
+    _subjectiveRevealed = false;
+    _showOptionalKeyboard = false;
     _followUpController.clear();
     appState.nextQuestion();
     _scrollToTop();

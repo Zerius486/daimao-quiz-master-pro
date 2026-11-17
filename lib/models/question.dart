@@ -40,6 +40,7 @@ class Question {
         'ming_jie' => '名解',
         'jian_da' => '简答',
         'jie_da' => '问答',
+        'recite' => '背题',
         _ => '单选',
       };
 

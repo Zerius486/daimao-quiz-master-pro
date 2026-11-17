@@ -28,6 +28,8 @@ const List<ApiPreset> kApiPresets = [
   ApiPreset(
       '月之暗面 Kimi', 'https://api.moonshot.cn/v1', 'moonshot-v1-8k', '长文本见长'),
   ApiPreset('OpenAI 官方', 'https://api.openai.com/v1', 'gpt-4o-mini', '需自备网络环境'),
+  ApiPreset('Google Gemini 官方', 'https://generativelanguage.googleapis.com/v1beta',
+      'gemini-2.5-flash', '原生协议（支持 JSON 强约束与长上下文），需自备网络环境'),
   ApiPreset('OpenRouter', 'https://openrouter.ai/api/v1',
       'deepseek/deepseek-chat', '聚合全球模型（含免费额度）'),
   ApiPreset('OpenCode Go', 'https://opencode.ai/zen/go/v1', 'glm-5.3-flash',

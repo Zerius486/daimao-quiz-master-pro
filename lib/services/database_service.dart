@@ -56,6 +56,9 @@ class DatabaseService {
     return _database!;
   }
 
+  /// 当前数据库 schema 版本（onCreate/onUpgrade 与备份校验闸门共用）
+  static const int schemaVersion = 13;
+
   Future<Database> _initDatabase() async {
     // 桌面分支仅保留给测试宿主（flutter test 在 Windows 上运行需要 FFI）。
     // 正式产品只做 Android，无需此分支的发布形态
@@ -82,7 +85,7 @@ class DatabaseService {
 
     return await openDatabase(
       dbPath,
-      version: 12,
+      version: schemaVersion,
       onConfigure: _onConfigure,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
@@ -294,6 +297,23 @@ class DatabaseService {
       // v12 题目配图：图片是题目内容的一部分（文本流 `{{img:N}}` 标位置）
       await _createQuestionImagesTable(db);
     }
+    if (oldVersion < 13) {
+      // v13 期末突击（速成）状态表：独立于 FSRS 长期记忆曲线
+      await _createCramStatesTable(db);
+    }
+  }
+
+  /// 期末突击状态表（v13）。记录每题最近一次突击自评（again/hard/mastered），
+  /// 与 FSRS-5 长期记忆参数完全隔离。
+  Future<void> _createCramStatesTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS cram_states (
+        question_id INTEGER PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'again',
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE
+      )
+    ''');
   }
 
   /// 题目配图表（v12）。图片随题存取、随题级联删除；
@@ -604,6 +624,77 @@ class DatabaseService {
 
     // 同步索引（uid 唯一 + 批注设备过滤）
     await _createSyncIndexes(db);
+    await _createCramStatesTable(db);
+  }
+
+  // ======================== 期末突击状态 DAO（v13） ========================
+
+  Future<void> setCramStatus(int questionId, String status) async {
+    final db = await database;
+    await db.insert(
+      'cram_states',
+      {
+        'question_id': questionId,
+        'status': status,
+        'updated_at': DateTime.now().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<Map<int, String>> getCramStatusesByBank(List<int> bankIds) async {
+    if (bankIds.isEmpty) return {};
+    final db = await database;
+    final placeholders = List.filled(bankIds.length, '?').join(',');
+    final rows = await db.rawQuery('''
+      SELECT cs.question_id, cs.status
+      FROM cram_states cs
+      INNER JOIN questions q ON q.id = cs.question_id
+      WHERE q.bank_id IN ($placeholders)
+    ''', bankIds);
+    return {
+      for (final r in rows) r['question_id'] as int: r['status'] as String,
+    };
+  }
+
+  /// 按知识点聚合期末突击清零进度（kp, total, mastered, needReview）。
+  Future<List<({String kp, int total, int mastered, int needReview})>>
+      getCramProgressByKnowledgePoint(List<int> bankIds) async {
+    if (bankIds.isEmpty) return [];
+    final db = await database;
+    final placeholders = List.filled(bankIds.length, '?').join(',');
+    final rows = await db.rawQuery('''
+      SELECT
+        COALESCE(NULLIF(TRIM(q.knowledge_point), ''), '未分类') AS kp,
+        COUNT(*) AS total,
+        SUM(CASE WHEN cs.status = 'mastered' THEN 1 ELSE 0 END) AS mastered,
+        SUM(CASE WHEN cs.status IN ('again', 'hard') THEN 1 ELSE 0 END) AS need_review
+      FROM questions q
+      LEFT JOIN cram_states cs ON cs.question_id = q.id
+      WHERE q.bank_id IN ($placeholders)
+      GROUP BY kp
+      ORDER BY (total - mastered) DESC, total DESC, kp ASC
+    ''', bankIds);
+    return rows
+        .map((r) => (
+              kp: r['kp'] as String,
+              total: (r['total'] as num?)?.toInt() ?? 0,
+              mastered: (r['mastered'] as num?)?.toInt() ?? 0,
+              needReview: (r['need_review'] as num?)?.toInt() ?? 0,
+            ))
+        .toList();
+  }
+
+  Future<void> resetCramStatuses(List<int> bankIds) async {
+    if (bankIds.isEmpty) return;
+    final db = await database;
+    final placeholders = List.filled(bankIds.length, '?').join(',');
+    await db.rawDelete('''
+      DELETE FROM cram_states
+      WHERE question_id IN (
+        SELECT id FROM questions WHERE bank_id IN ($placeholders)
+      )
+    ''', bankIds);
   }
 
   // ======================== 局域网同步 DAO（v11） ========================
@@ -2351,10 +2442,10 @@ class DatabaseService {
       final versionRows = await tmpDb.rawQuery('PRAGMA user_version');
       final version =
           versionRows.isNotEmpty ? versionRows.first.values.first as int : 0;
-      if (version < 1 || version > 12) {
+      if (version < 1 || version > schemaVersion) {
         // user_version 0/非法：非本 App 生成或版本被外部重置，导入后会触发
         // onUpgrade(0→8) 破坏性重建清空题目，拒绝导入。
-        // 版本上界随 schema 走：当前 schema v12（题目配图）
+        // 版本上界随 schema 走：当前 schema v13（期末突击状态表）
         return '文件不是有效的数据库备份（版本信息缺失或非法）';
       }
       final tables = await tmpDb.rawQuery(

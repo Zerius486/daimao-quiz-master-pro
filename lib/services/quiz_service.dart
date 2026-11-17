@@ -308,6 +308,37 @@ class QuizService {
     return false;
   }
 
+  /// 用自定义题目列表启动非持久化会话（期末突击模式使用）。
+  void startCustomSession({
+    required List<Question> questions,
+    required List<int> bankIds,
+    required String mode,
+  }) {
+    _questions = List.of(questions);
+    _currentIndex = 0;
+    _answerStartTime = DateTime.now();
+    _currentSession = _questions.isEmpty
+        ? null
+        : QuizSession(
+            bankIds: bankIds.join(','),
+            mode: mode,
+            totalQuestions: _questions.length,
+            startTime: DateTime.now().toIso8601String(),
+          );
+  }
+
+  /// 将当前题目插回本轮后续队列（期末突击：不会→插后第N题；模糊→放轮末）。
+  void requeueCurrentQuestion({int? offsetFromCurrent}) {
+    final q = currentQuestion;
+    if (q == null) return;
+    if (offsetFromCurrent == null) {
+      _questions.add(q);
+    } else {
+      final target = (_currentIndex + offsetFromCurrent).clamp(0, _questions.length);
+      _questions.insert(target, q);
+    }
+  }
+
   /// 返回上一题
   bool previousQuestion() {
     if (hasPrevious) {

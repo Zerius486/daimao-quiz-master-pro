@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../models/question_image.dart';
 import '../../services/theme_service.dart';
 import '../../utils/design_tokens.dart';
+import '../../utils/latex_text.dart';
 import '../../utils/question_image_tokens.dart';
 
 /// 题目图文混排文本：把含 `{{img:N}}` 占位符的题目文本渲染为
@@ -65,8 +66,17 @@ class MjRichQuestionText extends StatelessWidget {
     );
   }
 
-  Widget _buildText(BuildContext context, String value) =>
-      textBuilder?.call(context, value) ?? Text(value, style: style);
+  Widget _buildText(BuildContext context, String value) {
+    if (textBuilder != null) return textBuilder!(context, value);
+    if (!mightContainLatex(value)) return Text(value, style: style);
+    final effectiveStyle = style ?? DefaultTextStyle.of(context).style;
+    return Text.rich(
+      TextSpan(
+        style: effectiveStyle,
+        children: buildLatexInlineSpans(value, style: effectiveStyle),
+      ),
+    );
+  }
 }
 
 class _QuestionImageBlock extends StatelessWidget {

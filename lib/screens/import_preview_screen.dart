@@ -174,12 +174,44 @@ class _ImportPreviewScreenState extends State<ImportPreviewScreen> {
                               border: Border.all(
                                   color: ac.border, width: MaoLine.width),
                             ),
-                            child: Text(
-                              '${appState.previewParseErrors.length} 个分块解析失败（已跳过）：'
-                              '${appState.previewParseErrors.join('；')}',
-                              style: TextStyle(
-                                  fontSize: MaoType.caption,
-                                  color: ac.textSecondary),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '${appState.previewParseErrors.length} 个分块解析失败（已跳过）：'
+                                  '${appState.previewParseErrors.join('；')}',
+                                  style: TextStyle(
+                                      fontSize: MaoType.caption,
+                                      color: ac.textSecondary),
+                                ),
+                                if (appState.previewFailedChunks.isNotEmpty) ...[
+                                  const SizedBox(height: 6),
+                                  TextButton.icon(
+                                    onPressed: appState.retryingFailedChunks
+                                        ? null
+                                        : () => appState
+                                            .retryFailedPreviewChunks(),
+                                    icon: appState.retryingFailedChunks
+                                        ? const SizedBox(
+                                            width: 14,
+                                            height: 14,
+                                            child: CircularProgressIndicator(
+                                                strokeWidth: 2),
+                                          )
+                                        : const Icon(Icons.refresh, size: 16),
+                                    label: Text(appState.retryingFailedChunks
+                                        ? '正在重试...'
+                                        : '重试失败分块 (${appState.previewFailedChunks.length})'),
+                                    style: TextButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 8, vertical: 4),
+                                      minimumSize: Size.zero,
+                                      tapTargetSize:
+                                          MaterialTapTargetSize.shrinkWrap,
+                                    ),
+                                  ),
+                                ],
+                              ],
                             ),
                           ),
 

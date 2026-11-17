@@ -12,14 +12,33 @@ import '../utils/app_constants.dart';
 import 'database_service.dart';
 import 'debug_log_service.dart';
 
+/// 单个失败分块的快照，供预览页一键重试（避免整份文档重跑）。
+class AIParseChunkFailure {
+  final int index; // 0-based 分块索引
+  final String rawChunk;
+  final String error;
+
+  const AIParseChunkFailure({
+    required this.index,
+    required this.rawChunk,
+    required this.error,
+  });
+}
+
 /// v1.0.2 设计审查修复：分块解析结果显性化。
 /// 断网/401/超时/格式错误不再伪装成「解析完成，共 0 道题目」
 class AIParseResult {
   final List<Question> questions;
   final int failedChunks;
   final List<String> errors; // 每个失败块一行原因（如「第 3 块：AI服务返回错误 (401)」）
+  final List<AIParseChunkFailure> failedChunkRecords;
 
-  AIParseResult(this.questions, this.failedChunks, this.errors);
+  AIParseResult(
+    this.questions,
+    this.failedChunks,
+    this.errors, {
+    this.failedChunkRecords = const [],
+  });
 }
 
 class AIService {
@@ -53,58 +72,117 @@ class AIService {
     int bankId,
     void Function(int done, int total)? onProgress,
   ) async {
-    // 题目边界感知切块：每块都是完整的题目集合，不会把题干与答案切开。
-    // v1.27 截断修复：块上限 2000 字——此前 7000 字一块时输出 JSON 过长，
-    // 撞模型 max_tokens 上限被截断，全块报「响应不是合法 JSON」（日志实证：
-    // 失败块输出全部在 ~11000 字符≈ 8K token 处截断）。
     final chunks = splitTextIntoQuestionChunks(rawText);
+    return _parseChunkList(
+      [for (var i = 0; i < chunks.length; i++) (i, chunks[i])],
+      bankId,
+      onProgress,
+    );
+  }
+
+  /// 仅重试失败的分块（保留原块号），避免整份文档重跑浪费时间与 Token。
+  Future<AIParseResult> retryFailedChunks(
+    List<AIParseChunkFailure> failed,
+    int bankId,
+    void Function(int done, int total)? onProgress,
+  ) async {
+    if (failed.isEmpty) return AIParseResult(const [], 0, const []);
+    return _parseChunkList(
+      [for (final f in failed) (f.index, f.rawChunk)],
+      bankId,
+      onProgress,
+    );
+  }
+
+  Future<AIParseResult> _parseChunkList(
+    List<(int, String)> indexedChunks,
+    int bankId,
+    void Function(int done, int total)? onProgress,
+  ) async {
     final allQuestions = <Question>[];
     final errors = <String>[];
+    final failedRecords = <AIParseChunkFailure>[];
     final now = DateTime.now().toIso8601String();
-  
-    // 并发受限的 worker 池：结果按块号收集（错误上报顺序稳定）
-    final results =
-        List<(List<Question>, String?)?>.filled(chunks.length, null);
+    final total = indexedChunks.length;
+
+    // 并发受限的 worker 池：结果按输入顺序收集（错误上报顺序稳定）
+    final results = List<(List<Question>, String?)?>.filled(total, null);
     var next = 0;
     var done = 0;
     Future<void> worker() async {
       while (true) {
-        final i = next++;
-        if (i >= chunks.length) return;
-        final r = await _parseChunkWithAI(chunks[i], bankId, now);
-        results[i] = r;
+        final pos = next++;
+        if (pos >= total) return;
+        final r = await _parseChunkWithAI(indexedChunks[pos].$2, bankId, now);
+        results[pos] = r;
         done++;
-        onProgress?.call(done, chunks.length);
+        onProgress?.call(done, total);
       }
     }
-  
-    final workers = min(parseConcurrency, max(1, chunks.length));
+
+    final workers = min(parseConcurrency, max(1, total));
     await Future.wait(List.generate(workers, (_) => worker()));
-  
-    for (var i = 0; i < chunks.length; i++) {
-      final r = results[i];
+
+    for (var pos = 0; pos < total; pos++) {
+      final r = results[pos];
       if (r == null) continue;
       allQuestions.addAll(r.$1);
       if (r.$2 != null) {
+        final chunkIndex = indexedChunks[pos].$1;
         // 内部降级标记不展示给用户。
-        errors.add('第 ${i + 1} 块：${r.$2!.replaceAll(_tokenLimitMarker, '').replaceAll(_permanentMarker, '')}');
+        final cleanErr = r.$2!
+            .replaceAll(_tokenLimitMarker, '')
+            .replaceAll(_permanentMarker, '');
+        errors.add('第 ${chunkIndex + 1} 块：$cleanErr');
+        failedRecords.add(AIParseChunkFailure(
+          index: chunkIndex,
+          rawChunk: indexedChunks[pos].$2,
+          error: cleanErr,
+        ));
       }
     }
-  
-    onProgress?.call(chunks.length, chunks.length);
-    return AIParseResult(allQuestions, errors.length, errors);
+
+    onProgress?.call(total, total);
+    return AIParseResult(
+      allQuestions,
+      errors.length,
+      errors,
+      failedChunkRecords: failedRecords,
+    );
   }
 
   /// 题目起始行判定（与 DocParserService._isQuestionLine 同口径，
-  /// 另兼容【第N题】等括号变体）：边界切块的唯一依据。
-  /// 提升为静态公开：便于单测直接验证切块正确性；
-  /// PDF 图归属（前置图挂下一题）也复用同一口径。
+  /// 另兼容【第N题】、Q1.、[1] 等常见变体）：边界切块的唯一依据。
   static final RegExp questionStartPattern = RegExp(
-      r'^\s*(?:\d+[\.、．\)）]|第\s*\d+\s*题|[（\(]\s*\d+\s*[）\)]|【\s*第?\s*\d+\s*题\s*】)');
+      r'^\s*(?:\d+[\.、．\)）]|[Qq]\s*\d+[\.、．:：\)\）]|\[\s*\d+\s*\]|第\s*\d+\s*题|[（\(]\s*\d+\s*[）\)]|【\s*第?\s*\d+\s*题\s*】)');
 
   static bool isQuestionStart(String line) =>
       questionStartPattern.hasMatch(line);
-  
+
+  /// 文本预清洗与降噪：统一换行、去掉纯装饰分隔线、压缩多余空行，
+  /// 减少无效 Token 与分块数量，提高解析速度与稳定性（保留 `{{img:N}}`）。
+  @visibleForTesting
+  static String cleanRawTextForParsing(String rawText) {
+    final normalized = rawText.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+    final divider = RegExp(r'^[\s=\-_*~—─]{4,}$');
+    final out = <String>[];
+    var blankRun = 0;
+    for (final rawLine in normalized.split('\n')) {
+      final line = rawLine.trimRight();
+      if (line.trim().isEmpty || divider.hasMatch(line.trim())) {
+        blankRun++;
+        if (blankRun <= 1 && out.isNotEmpty) out.add('');
+      } else {
+        blankRun = 0;
+        out.add(line);
+      }
+    }
+    while (out.isNotEmpty && out.last.isEmpty) {
+      out.removeLast();
+    }
+    return out.join('\n');
+  }
+
   /// 题目边界感知切块（v1.27 提速 + 防切断）：
   /// 1. 按题目起始行把文本分成完整题目块（题干+选项+答案+解析永不拆散）；
   /// 2. 完整块贪心装箱到 [maxChars] 内，切点永远落在题目与题目之间；
@@ -114,7 +192,8 @@ class AIService {
   @visibleForTesting
   static List<String> splitTextIntoQuestionChunks(String text,
       {int maxChars = 2000}) {
-    final lines = text.split('\n');
+    final cleaned = cleanRawTextForParsing(text);
+    final lines = cleaned.split('\n');
   
     // 1. 按题目起始行分组为完整题目块；记录首题之前的文档头。
     final blocks = <String>[];
@@ -281,24 +360,15 @@ $chunk
 请直接返回 JSON：''';
 
     try {
-      final response = await _client.post(
-        ApiEndpoint.resolve(_settings.apiEndpoint),
-        headers: await _headers(),
-        body: jsonEncode({
-          'model': _settings.model,
-          'messages': [
-            {
-              'role': 'system',
-              'content': '你是一个精确的 JSON 格式题目解析器。只返回合法 JSON，不返回任何其他内容。'
-            },
-            {'role': 'user', 'content': prompt},
-          ],
-          'temperature': 0.1,
-          // v1.27 截断修复：默认放宽到 8192；超模型上限时由降级序列重试。
-          'max_tokens': maxTokens,
-          'response_format': {'type': 'json_object'},
-        }),
-      ).timeout(const Duration(seconds: 60));
+      final response = await _postChat(
+        systemPrompt: '你是一个精确的 JSON 格式题目解析器。只返回合法 JSON，不返回任何其他内容。',
+        userPrompt: prompt,
+        temperature: 0.1,
+        // v1.27 截断修复：默认放宽到 8192；超模型上限时由降级序列重试。
+        maxTokens: maxTokens,
+        jsonMode: true,
+        timeout: const Duration(seconds: 60),
+      );
 
       if (response.statusCode == 200) {
         final logger = DebugLogService.instance;
@@ -307,8 +377,7 @@ $chunk
         final decoded = utf8.decode(rawBytes);
         logger.logUtf8Decode(rawBytes.length, decoded.length, decoded);
         final data = jsonDecode(decoded);
-        final content =
-            (data['choices']?[0]?['message']?['content'] as String?) ?? '';
+        final content = _extractTextFromData(data) ?? '';
         // 空内容（null/空串/只剩 ``` 围栏）：多为服务端瞬时空响应（限流、
         // 余额临界、内容过滤）。此前空串会一路走到 jsonDecode('') 炸出
         // "Unexpected end of input"——用户看到的是一堆异常堆栈，完全看不懂
@@ -457,34 +526,19 @@ $chunk
   Future<(List<Question>, String?)> _parsePageImageOnce(
       Uint8List jpeg, int bankId, String now) async {
     try {
-      final b64 = base64Encode(jpeg);
-      final response = await _client.post(
-        ApiEndpoint.resolve(_settings.apiEndpoint),
-        headers: await _headers(),
-        body: jsonEncode({
-          'model': _settings.model,
-          'messages': [
-            {
-              'role': 'user',
-              'content': [
-                {'type': 'text', 'text': _visionPrompt},
-                {
-                  'type': 'image_url',
-                  'image_url': {'url': 'data:image/jpeg;base64,$b64'}
-                },
-              ],
-            },
-          ],
-          'temperature': 0.1,
-          // 视觉模型逐图慢（整页扫描信息量大），超时与输出上限都放宽
-          'max_tokens': 8192,
-        }),
-      ).timeout(const Duration(seconds: 120));
+      final response = await _postChat(
+        userPrompt: _visionPrompt,
+        temperature: 0.1,
+        // 视觉模型逐图慢（整页扫描信息量大），超时与输出上限都放宽
+        maxTokens: 8192,
+        jsonMode: _isGeminiNative,
+        imageJpeg: jpeg,
+        timeout: const Duration(seconds: 120),
+      );
 
       if (response.statusCode == 200) {
         final data = jsonDecode(utf8.decode(response.bodyBytes));
-        final content =
-            (data['choices']?[0]?['message']?['content'] as String?) ?? '';
+        final content = _extractTextFromData(data) ?? '';
         if (_isBlankContent(content)) {
           return (<Question>[], 'AI 返回了空响应（可能是限流或账户余额不足）');
         }
@@ -666,14 +720,20 @@ $chunk
       final data = jsonDecode(payload);
       if (data is! Map) return null;
       final choices = data['choices'];
-      if (choices is! List || choices.isEmpty) return null;
-      final first = choices[0];
-      if (first is! Map) return null;
-      final delta = first['delta'];
-      if (delta is! Map) return null;
-      final content = delta['content'];
-      // 类型保护：某些实现把 content 给成数组/对象
-      return (content is String && content.isNotEmpty) ? content : null;
+      if (choices is List && choices.isNotEmpty) {
+        final first = choices[0];
+        if (first is Map) {
+          final delta = first['delta'];
+          if (delta is Map) {
+            final content = delta['content'];
+            // 类型保护：某些实现把 content 给成数组/对象
+            return (content is String && content.isNotEmpty) ? content : null;
+          }
+        }
+      }
+      // Google Gemini SSE: candidates[0].content.parts[].text
+      final geminiText = _extractGeminiText(data);
+      return (geminiText != null && geminiText.isNotEmpty) ? geminiText : null;
     } catch (_) {
       return null; // 半行或非 JSON 噪音
     }
@@ -695,30 +755,62 @@ $chunk
       final data = jsonDecode(payload);
       if (data is! Map) return null;
       final usage = data['usage'];
-      if (usage is! Map) return null;
-      final total = usage['total_tokens'];
-      return total is int ? total : null;
+      if (usage is Map) {
+        final total = usage['total_tokens'];
+        return total is int ? total : null;
+      }
+      final meta = data['usageMetadata'];
+      if (meta is Map) {
+        final total = meta['totalTokenCount'];
+        return total is int ? total : null;
+      }
+      return null;
     } catch (_) {
       return null;
     }
   }
 
-  /// 从一次性响应体里取正文（兼容分支复用，与 [_callAI] 的取值口径一致）
+  /// 从一次性响应体里取正文（兼容 OpenAI 与 Gemini 原生结构）
   static String? _contentFromChatBody(String body) {
     try {
-      final data = jsonDecode(body);
-      if (data is! Map) return null;
-      final choices = data['choices'];
-      if (choices is! List || choices.isEmpty) return null;
-      final first = choices[0];
-      if (first is! Map) return null;
-      final message = first['message'];
-      if (message is! Map) return null;
-      final content = message['content'];
-      return content is String ? content : null;
+      return _extractTextFromData(jsonDecode(body));
     } catch (_) {
       return null;
     }
+  }
+
+  static String? _extractTextFromData(dynamic data) {
+    if (data is! Map) return null;
+    final choices = data['choices'];
+    if (choices is List && choices.isNotEmpty) {
+      final first = choices[0];
+      if (first is Map) {
+        final message = first['message'];
+        if (message is Map && message['content'] is String) {
+          return message['content'] as String;
+        }
+      }
+    }
+    return _extractGeminiText(data);
+  }
+
+  static String? _extractGeminiText(Map data) {
+    final candidates = data['candidates'];
+    if (candidates is! List || candidates.isEmpty) return null;
+    final first = candidates[0];
+    if (first is! Map) return null;
+    final content = first['content'];
+    if (content is! Map) return null;
+    final parts = content['parts'];
+    if (parts is! List || parts.isEmpty) return null;
+    final buf = StringBuffer();
+    for (final p in parts) {
+      if (p is! Map) continue;
+      if (p['thought'] == true) continue;
+      final t = p['text'];
+      if (t is String) buf.write(t);
+    }
+    return buf.isEmpty ? null : buf.toString();
   }
 
   /// 流式对话：产出**累计文本**（每次都给出到目前为止的全文），
@@ -726,22 +818,33 @@ $chunk
   ///
   /// 任一步失败即抛异常，由 [streamAnalysis] / [streamFollowUp] 负责回退。
   Stream<String> _streamChat(String userPrompt) async* {
-    final request = http.Request('POST', ApiEndpoint.resolve(_settings.apiEndpoint))
-      ..headers.addAll(await _headers())
+    const systemPrompt = '你是一个专业的学习辅导助手，擅长解析题目、分析学习薄弱点，并提供针对性建议。';
+    final uri = _isGeminiNative
+        ? ApiEndpoint.geminiGenerateUri(_settings.apiEndpoint, _settings.model,
+            stream: true)
+        : ApiEndpoint.resolve(_settings.apiEndpoint);
+    final headers = _isGeminiNative ? _geminiHeaders() : await _headers();
+    final bodyMap = _isGeminiNative
+        ? _buildGeminiBody(
+            userPrompt: userPrompt,
+            systemPrompt: systemPrompt,
+            temperature: 0.3,
+            maxTokens: 4096,
+          )
+        : {
+            'model': _settings.model,
+            'messages': [
+              {'role': 'system', 'content': systemPrompt},
+              {'role': 'user', 'content': userPrompt},
+            ],
+            'temperature': 0.3,
+            'max_tokens': 4096,
+            'stream': true,
+          };
+    final request = http.Request('POST', uri)
+      ..headers.addAll(headers)
       ..headers['Accept'] = 'text/event-stream'
-      ..body = jsonEncode({
-        'model': _settings.model,
-        'messages': [
-          {
-            'role': 'system',
-            'content': '你是一个专业的学习辅导助手，擅长解析题目、分析学习薄弱点，并提供针对性建议。'
-          },
-          {'role': 'user', 'content': userPrompt},
-        ],
-        'temperature': 0.3,
-        'max_tokens': 4096,
-        'stream': true,
-      });
+      ..body = jsonEncode(bodyMap);
 
     // 30s 只覆盖「拿到响应头」；正文的停滞由下面流上的 60s 空闲超时兜底
     final response = await _client.send(request).timeout(const Duration(seconds: 30));
@@ -978,33 +1081,23 @@ $detail$marking
 ${question.options.isNotEmpty ? '选项：\n${question.optionsWithLabels.join('\n')}' : ''}
 正确答案：${question.correctAnswer}''';
     try {
-      final response = await _client.post(
-        ApiEndpoint.resolve(_settings.apiEndpoint),
-        headers: await _headers(),
-        body: jsonEncode({
-          'model': _settings.model,
-          'messages': [
-            {
-              'role': 'system',
-              'content': '你是医学教材章节分类助手。请判断下面这道题属于哪个教材章节级知识点。'
-            },
-            {'role': 'user', 'content': prompt},
-          ],
-          'temperature': 0.1,
-          'max_tokens': 64,
-        }),
-      ).timeout(const Duration(seconds: 30));
+      final response = await _postChat(
+        systemPrompt: '你是医学教材章节分类助手。请判断下面这道题属于哪个教材章节级知识点。',
+        userPrompt: prompt,
+        temperature: 0.1,
+        maxTokens: 64,
+        timeout: const Duration(seconds: 30),
+      );
 
       if (response.statusCode == 200) {
         final data = jsonDecode(utf8.decode(response.bodyBytes));
-        final content =
-            data['choices']?[0]?['message']?['content'] as String?;
+        final content = _extractTextFromData(data);
         _trackUsage(data);
         final kp = _cleanTag(content ?? '');
         if (kp.isEmpty) return 'AI解析生成失败';
         return kp;
       }
-      return 'AI服务返回错误 ($response.statusCode)';
+      return 'AI服务返回错误 (${response.statusCode})';
     } catch (_) {
       return 'AI请求失败';
     }
@@ -1032,27 +1125,17 @@ $statsText
 
 控制在180字，用 ## 分标题，**粗体**突出知识点名和关键数据。''';
     try {
-      final response = await _client.post(
-        ApiEndpoint.resolve(_settings.apiEndpoint),
-        headers: await _headers(),
-        body: jsonEncode({
-          'model': _settings.model,
-          'messages': [
-            {
-              'role': 'system',
-              // v1.0.2 对齐里程碑：根据错题本的知识点分布数据精炼
-              'content': '你是一个学习数据分析助手。根据错题本的知识点分布数据，精炼出最需要优先复习的知识点类型，并给出建议。'
-            },
-            {'role': 'user', 'content': prompt},
-          ],
-          'temperature': 0.3,
-          'max_tokens': 1024,
-        }),
-      ).timeout(const Duration(seconds: 30));
+      final response = await _postChat(
+        // v1.0.2 对齐里程碑：根据错题本的知识点分布数据精炼
+        systemPrompt: '你是一个学习数据分析助手。根据错题本的知识点分布数据，精炼出最需要优先复习的知识点类型，并给出建议。',
+        userPrompt: prompt,
+        temperature: 0.3,
+        maxTokens: 1024,
+        timeout: const Duration(seconds: 30),
+      );
       if (response.statusCode == 200) {
         final data = jsonDecode(utf8.decode(response.bodyBytes));
-        final content =
-            data['choices']?[0]?['message']?['content'] as String?;
+        final content = _extractTextFromData(data);
         _trackUsage(data);
         return content ?? '解析生成失败，请检查网络或 API 配置后重试。';
       }
@@ -1136,22 +1219,13 @@ $marking
 
   Future<String> _callAI(String userPrompt) async {
     try {
-      final response = await _client.post(
-        ApiEndpoint.resolve(_settings.apiEndpoint),
-        headers: await _headers(),
-        body: jsonEncode({
-          'model': _settings.model,
-          'messages': [
-            {
-              'role': 'system',
-              'content': '你是一个专业的学习辅导助手，擅长解析题目、分析学习薄弱点，并提供针对性建议。'
-            },
-            {'role': 'user', 'content': userPrompt},
-          ],
-          'temperature': 0.3,
-          'max_tokens': 4096,
-        }),
-      ).timeout(const Duration(seconds: 30));
+      final response = await _postChat(
+        systemPrompt: '你是一个专业的学习辅导助手，擅长解析题目、分析学习薄弱点，并提供针对性建议。',
+        userPrompt: userPrompt,
+        temperature: 0.3,
+        maxTokens: 4096,
+        timeout: const Duration(seconds: 30),
+      );
 
       if (response.statusCode == 200) {
         final logger = DebugLogService.instance;
@@ -1160,7 +1234,7 @@ $marking
         final decoded = utf8.decode(rawBytes);
         logger.logUtf8Decode(rawBytes.length, decoded.length, decoded);
         final data = jsonDecode(decoded);
-        final content = data['choices']?[0]?['message']?['content'] as String?;
+        final content = _extractTextFromData(data);
         logger.log('PIPE:DECODE', 'contentLen=${content?.length ?? 0}  hasChoices=${data['choices'] != null}');
         _trackUsage(data);
         return content ?? '解析生成失败，请检查网络或 API 配置后重试。';
@@ -1174,15 +1248,20 @@ $marking
 
   void _trackUsage(Map<String, dynamic> data) {
     final usage = data['usage'];
-    if (usage != null) {
+    if (usage is Map) {
       _totalTokensUsed += (usage['total_tokens'] as int?) ?? 0;
+      return;
+    }
+    final meta = data['usageMetadata'];
+    if (meta is Map) {
+      _totalTokensUsed += (meta['totalTokenCount'] as int?) ?? 0;
     }
   }
 
   /// 查询 API 余额（元）：base 从可配置 apiEndpoint 推导（换供应商后余额接口跟随），
   /// 仅当主机为 deepseek.com 时请求其专用余额接口，其余主机按通用 /user/balance 尝试
   Future<double?> fetchBalance() async {
-    if (_settings.apiKey.isEmpty) return null;
+    if (_settings.apiKey.isEmpty || _isGeminiNative) return null;
     if (_cachedBalance != null && _balanceCacheTime != null &&
         DateTime.now().difference(_balanceCacheTime!) < _balanceCacheDuration) {
       return _cachedBalance;
@@ -1221,6 +1300,105 @@ $marking
     return (balance / avgPrice).round();
   }
 
+  bool get _isGeminiNative => ApiEndpoint.isGeminiNative(_settings.apiEndpoint);
+
+  Map<String, String> _geminiHeaders() => {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': _settings.apiKey,
+        'User-Agent': ApiEndpoint.userAgent,
+      };
+
+  Map<String, dynamic> _buildGeminiBody({
+    required String userPrompt,
+    String? systemPrompt,
+    required double temperature,
+    required int maxTokens,
+    bool jsonMode = false,
+    Uint8List? imageJpeg,
+  }) =>
+      {
+        if (systemPrompt != null && systemPrompt.isNotEmpty)
+          'systemInstruction': {
+            'parts': [
+              {'text': systemPrompt}
+            ],
+          },
+        'contents': [
+          {
+            'role': 'user',
+            'parts': [
+              {'text': userPrompt},
+              if (imageJpeg != null)
+                {
+                  'inlineData': {
+                    'mimeType': 'image/jpeg',
+                    'data': base64Encode(imageJpeg),
+                  }
+                },
+            ],
+          }
+        ],
+        'generationConfig': {
+          'temperature': temperature,
+          'maxOutputTokens': maxTokens,
+          if (jsonMode) 'responseMimeType': 'application/json',
+        },
+      };
+
+  Future<http.Response> _postChat({
+    required String userPrompt,
+    String? systemPrompt,
+    double temperature = 0.1,
+    int maxTokens = 4096,
+    bool jsonMode = false,
+    Uint8List? imageJpeg,
+    Duration timeout = const Duration(seconds: 30),
+  }) async {
+    if (_isGeminiNative) {
+      final uri = ApiEndpoint.geminiGenerateUri(
+          _settings.apiEndpoint, _settings.model);
+      final body = _buildGeminiBody(
+        userPrompt: userPrompt,
+        systemPrompt: systemPrompt,
+        temperature: temperature,
+        maxTokens: maxTokens,
+        jsonMode: jsonMode,
+        imageJpeg: imageJpeg,
+      );
+      return _client
+          .post(uri, headers: _geminiHeaders(), body: jsonEncode(body))
+          .timeout(timeout);
+    }
+    final contentPayload = imageJpeg != null
+        ? [
+            {'type': 'text', 'text': userPrompt},
+            {
+              'type': 'image_url',
+              'image_url': {
+                'url': 'data:image/jpeg;base64,${base64Encode(imageJpeg)}'
+              }
+            },
+          ]
+        : userPrompt;
+    final body = <String, dynamic>{
+      'model': _settings.model.trim().isEmpty
+          ? AppSettings.defaultModel
+          : _settings.model.trim(),
+      'messages': [
+        if (systemPrompt != null && systemPrompt.isNotEmpty)
+          {'role': 'system', 'content': systemPrompt},
+        {'role': 'user', 'content': contentPayload},
+      ],
+      'temperature': temperature,
+      'max_tokens': maxTokens,
+      if (jsonMode) 'response_format': {'type': 'json_object'},
+    };
+    return _client
+        .post(ApiEndpoint.resolve(_settings.apiEndpoint),
+            headers: await _headers(), body: jsonEncode(body))
+        .timeout(timeout);
+  }
+
   /// 统一的请求头（v1.28）
   ///
   /// 除认证外注入供应商专用头：
@@ -1246,9 +1424,13 @@ $marking
     if (_settings.apiKey.trim().isEmpty) {
       return (<String>[], '请先填写 API Key');
     }
-    final uri = ApiEndpoint.modelsUrl(_settings.apiEndpoint);
+    final isGemini = _isGeminiNative;
+    final uri = isGemini
+        ? ApiEndpoint.geminiModelsUri(_settings.apiEndpoint)
+        : ApiEndpoint.modelsUrl(_settings.apiEndpoint);
     try {
-      final response = await _client.get(uri, headers: await _headers())
+      final response = await _client
+          .get(uri, headers: isGemini ? _geminiHeaders() : await _headers())
           .timeout(const Duration(seconds: 20));
       if (response.statusCode != 200) {
         return (<String>[],
@@ -1262,10 +1444,19 @@ $marking
       if (list is! List) return (<String>[], '返回结构异常，无法解析模型列表');
       final ids = <String>[];
       for (final e in list) {
-        final id = e is Map ? (e['id'] ?? e['name'] ?? e['model']) : e;
-        if (id != null && id.toString().trim().isNotEmpty) {
-          ids.add(id.toString().trim());
+        if (isGemini && e is Map) {
+          final methods = e['supportedGenerationMethods'];
+          if (methods is List && !methods.contains('generateContent')) {
+            continue;
+          }
         }
+        final rawId = e is Map ? (e['id'] ?? e['name'] ?? e['model']) : e;
+        if (rawId == null) continue;
+        var id = rawId.toString().trim();
+        if (isGemini && id.startsWith('models/')) {
+          id = id.substring('models/'.length);
+        }
+        if (id.isNotEmpty) ids.add(id);
       }
       ids.sort();
       if (ids.isEmpty) return (<String>[], '该接口未返回任何模型');
@@ -1289,32 +1480,30 @@ $marking
     if (_settings.apiKey.trim().isEmpty) {
       return (false, '请先填写 API Key');
     }
-    final uri = ApiEndpoint.resolve(raw);
+    final isGemini = _isGeminiNative;
+    final uri = isGemini
+        ? ApiEndpoint.geminiGenerateUri(_settings.apiEndpoint, _settings.model)
+        : ApiEndpoint.resolve(raw);
     final normalizedNote =
         uri.toString() == raw ? '' : '（地址已自动补全为 ${uri.toString()}）';
     try {
-      final response = await _client.post(
-        uri,
-        headers: await _headers(),
-        body: jsonEncode({
-          'model': _settings.model.trim().isEmpty
-              ? AppSettings.defaultModel
-              : _settings.model.trim(),
-          'messages': [
-            {'role': 'user', 'content': 'hi'},
-          ],
-          'max_tokens': 1,
-        }),
-      ).timeout(const Duration(seconds: 20));
+      final response = await _postChat(
+        userPrompt: 'hi',
+        temperature: 0.1,
+        maxTokens: isGemini ? 8 : 1,
+        timeout: const Duration(seconds: 20),
+      );
 
       if (response.statusCode == 200) {
         final data = jsonDecode(utf8.decode(response.bodyBytes));
-        final content = data['choices']?[0]?['message']?['content'];
-        // 200 且结构正确 → 连通；内容为空也视为成功（部分供应商 max_tokens=1 无内容）
-        if (data['choices'] != null || content != null) {
+        final content = _extractTextFromData(data);
+        final ok = isGemini
+            ? (data['candidates'] != null || content != null)
+            : (data['choices'] != null || content != null);
+        if (ok) {
           return (true, '连接成功，模型 ${_settings.model} 可用$normalizedNote');
         }
-        return (false, '返回结构异常，可能不是 OpenAI 兼容接口$normalizedNote');
+        return (false, '返回结构异常，可能不是兼容接口$normalizedNote');
       }
       return (false,
           '${ApiEndpoint.explainStatus(response.statusCode, utf8.decode(response.bodyBytes))}$normalizedNote');

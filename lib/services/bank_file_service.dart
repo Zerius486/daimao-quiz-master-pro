@@ -126,21 +126,13 @@ class BankFileService {
         .where((o) => o.isNotEmpty)
         .toList();
 
+    final typeRaw =
+        (_first(m, ['question_type', 'type', '题型']) ?? '').toString().toLowerCase();
     var correctAnswer =
         (_first(m, ['correct_answer', 'answer', 'correctAnswer', '答案']) ?? '')
             .toString()
-            .trim()
-            .toUpperCase()
-        // 多选归一：A、C → A,C
-        .replaceAll(RegExp(r'[、，,;；/\s]+'), ',');
-    // 连续字母串归一（外部导出的 "AC"）：仅当纯大写字母且长度>1 时拆为 A,C。
-    // 中文/数字答案（填空、判断）不受影响
-    if (RegExp(r'^[A-Z]{2,}$').hasMatch(correctAnswer)) {
-      correctAnswer = correctAnswer.split('').join(',');
-    }
+            .trim();
 
-    final typeRaw =
-        (_first(m, ['question_type', 'type', '题型']) ?? '').toString().toLowerCase();
     String questionType = 'single_choice';
     if (typeRaw.contains('multi') || typeRaw.contains('多选')) {
       questionType = 'multi_choice';
@@ -152,10 +144,28 @@ class BankFileService {
       questionType = 'ming_jie';
     } else if (typeRaw.contains('jian') || typeRaw.contains('简答')) {
       questionType = 'jian_da';
-    } else if (typeRaw.contains('jie') || typeRaw.contains('问答')) {
+    } else if (typeRaw.contains('jie') || typeRaw.contains('问答') || typeRaw.contains('大题')) {
       questionType = 'jie_da';
-    } else if (correctAnswer.contains(',')) {
+    } else if (typeRaw.contains('recite') || typeRaw.contains('背题') || typeRaw.contains('背诵')) {
+      questionType = 'recite';
+    } else if (correctAnswer.toUpperCase().replaceAll(RegExp(r'[、，,;；/\s]+'), ',').contains(',')) {
       questionType = 'multi_choice';
+    }
+
+    final isSubjective = questionType == 'ming_jie' ||
+        questionType == 'jian_da' ||
+        questionType == 'jie_da' ||
+        questionType == 'recite';
+    if (!isSubjective) {
+      correctAnswer = correctAnswer
+          .toUpperCase()
+          // 多选归一：A、C → A,C
+          .replaceAll(RegExp(r'[、，,;；/\s]+'), ',');
+      // 连续字母串归一（外部导出的 "AC"）：仅当纯大写字母且长度>1 时拆为 A,C。
+      // 中文/数字答案（填空、判断）不受影响
+      if (RegExp(r'^[A-Z]{2,}$').hasMatch(correctAnswer)) {
+        correctAnswer = correctAnswer.split('').join(',');
+      }
     }
 
     final analysis = (_first(m, ['analysis', '解析']) ?? '').toString();

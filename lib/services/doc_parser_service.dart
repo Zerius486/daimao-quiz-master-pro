@@ -1,40 +1,171 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:typed_data';
 import 'package:archive/archive_io.dart';
+import 'package:image/image.dart' as img;
 import 'package:xml/xml.dart';
 import '../models/question.dart';
+import '../models/question_image.dart';
+
+/// DOCX 图文抽取结果（与 PDF 抽取同构，供 `materializeQuestionImages` 复用）。
+class DocxExtractResult {
+  final String rawText;
+  final Map<int, QuestionImage> imagePool;
+
+  const DocxExtractResult({
+    required this.rawText,
+    this.imagePool = const {},
+  });
+}
 
 class DocParserService {
 
   /// 从 DOCX 文件中提取原始纯文本
   static Future<String> extractRawText(String filePath) async {
-    return await Isolate.run(() => _extractRawTextSync(filePath));
+    final res = await extractDocxWithImages(filePath);
+    return res.rawText;
   }
 
-  static String _extractRawTextSync(String filePath) {
+  /// 从 DOCX 文件中提取文本与内嵌图片（生成 `{{img:N}}` 占位符 + `imagePool`）。
+  static Future<DocxExtractResult> extractDocxWithImages(
+      String filePath) async {
+    return await Isolate.run(() => _extractDocxWithImagesSync(filePath));
+  }
+
+  /// 从纯文本文件（TXT / MD）读取文本，自动去 UTF-8 BOM。
+  static Future<String> extractPlainText(String filePath) async {
+    return await Isolate.run(() {
+      try {
+        final bytes = File(filePath).readAsBytesSync();
+        var text = utf8.decode(bytes, allowMalformed: true);
+        if (text.startsWith('\uFEFF')) {
+          text = text.substring(1);
+        }
+        return text;
+      } catch (_) {
+        return '';
+      }
+    });
+  }
+
+  static DocxExtractResult _extractDocxWithImagesSync(String filePath) {
     try {
       final fileBytes = File(filePath).readAsBytesSync();
       final archive = ZipDecoder().decodeBytes(fileBytes);
       ArchiveFile? docXml;
+      ArchiveFile? relsXml;
+      final mediaByPath = <String, ArchiveFile>{};
       for (final f in archive) {
+        if (!f.isFile) continue;
         if (f.name == 'word/document.xml') {
           docXml = f;
-          break;
+        } else if (f.name == 'word/_rels/document.xml.rels') {
+          relsXml = f;
+        } else if (f.name.startsWith('word/media/')) {
+          mediaByPath[f.name] = f;
         }
       }
-      if (docXml == null) return '';
+      if (docXml == null) return const DocxExtractResult(rawText: '');
+
+      // 解析 rId -> word/media/... 映射
+      final rIdToMedia = <String, String>{};
+      if (relsXml != null) {
+        try {
+          final relDoc =
+              XmlDocument.parse(utf8.decode(relsXml.content as List<int>));
+          for (final rel in relDoc.findAllElements('Relationship')) {
+            final id = rel.getAttribute('Id');
+            var target = rel.getAttribute('Target');
+            if (id == null || target == null) continue;
+            target = target.replaceAll('\\', '/');
+            if (target.startsWith('/word/')) {
+              target = target.substring(1);
+            } else if (target.startsWith('../')) {
+              target = 'word/${target.substring(3)}';
+            } else if (!target.startsWith('word/')) {
+              target = 'word/$target';
+            }
+            if (mediaByPath.containsKey(target)) {
+              rIdToMedia[id] = target;
+            }
+          }
+        } catch (_) {
+          // rels 损坏不影响纯文本抽取
+        }
+      }
+
       final xmlContent = utf8.decode(docXml.content as List<int>);
       final document = XmlDocument.parse(xmlContent);
       final paragraphs = <String>[];
+      final imagePool = <int, QuestionImage>{};
+      final rIdToSlot = <String, int>{};
+      var nextSlot = 1;
+
       for (final p in document.findAllElements('w:p')) {
-        final texts = p.findAllElements('w:t');
-        final line = texts.map((t) => t.innerText).join('').trim();
+        final buf = StringBuffer();
+        for (final node in p.descendants.whereType<XmlElement>()) {
+          if (node.name.qualified == 'w:t') {
+            buf.write(node.innerText);
+          } else if (node.name.local == 'blip') {
+            final embed = node.getAttribute('r:embed') ??
+                node.getAttribute('embed',
+                    namespace:
+                        'http://schemas.openxmlformats.org/officeDocument/2006/relationships');
+            if (embed == null) continue;
+            final mediaPath = rIdToMedia[embed];
+            if (mediaPath == null) continue;
+            var slot = rIdToSlot[embed];
+            if (slot == null) {
+              final qImg = _encodeDocxImage(
+                  mediaByPath[mediaPath]!.content as List<int>, nextSlot);
+              if (qImg == null) continue;
+              slot = nextSlot++;
+              rIdToSlot[embed] = slot;
+              imagePool[slot] = qImg;
+            }
+            if (buf.isNotEmpty && !buf.toString().endsWith(' ')) {
+              buf.write(' ');
+            }
+            buf.write('{{img:$slot}}');
+          }
+        }
+        final line = buf.toString().trim();
         if (line.isNotEmpty) paragraphs.add(line);
       }
-      return paragraphs.join('\n');
+      return DocxExtractResult(
+        rawText: paragraphs.join('\n'),
+        imagePool: imagePool,
+      );
     } catch (_) {
-      return '';
+      return const DocxExtractResult(rawText: '');
+    }
+  }
+
+  static QuestionImage? _encodeDocxImage(List<int> rawBytes, int slot) {
+    try {
+      final decoded = img.decodeImage(Uint8List.fromList(rawBytes));
+      if (decoded == null || decoded.width <= 0 || decoded.height <= 0) {
+        return null;
+      }
+      var work = decoded;
+      const maxEdge = 1280;
+      if (work.width > maxEdge || work.height > maxEdge) {
+        work = work.width >= work.height
+            ? img.copyResize(work, width: maxEdge)
+            : img.copyResize(work, height: maxEdge);
+      }
+      final jpeg = Uint8List.fromList(img.encodeJpg(work, quality: 85));
+      return QuestionImage(
+        position: slot,
+        mime: 'image/jpeg',
+        width: work.width,
+        height: work.height,
+        anchor: 'docx:$slot',
+        content: jpeg,
+      );
+    } catch (_) {
+      return null;
     }
   }
 

@@ -56,7 +56,18 @@ class _ImportScreenState extends State<ImportScreen> {
   Future<void> _pickFiles() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: ['doc', 'docx', 'json', 'pdf'], // v1.0.2: 支持 JSON 题库；v12: 支持 PDF
+      allowedExtensions: [
+        'doc',
+        'docx',
+        'json',
+        'pdf',
+        'txt',
+        'md',
+        'png',
+        'jpg',
+        'jpeg',
+        'webp',
+      ],
       allowMultiple: true,
     );
 
@@ -68,12 +79,95 @@ class _ImportScreenState extends State<ImportScreen> {
     }
   }
 
-  /// DOC/DOCX/PDF 走 AI 解析；JSON 直接入库（与应用层同一口径）
+  /// DOCX/PDF/TXT/MD/图片走 AI 解析；JSON 直接入库（与应用层同一口径）
   bool _isAiDoc(String path) {
     final lower = path.toLowerCase();
     return lower.endsWith('.docx') ||
         lower.endsWith('.doc') ||
-        lower.endsWith('.pdf');
+        lower.endsWith('.pdf') ||
+        lower.endsWith('.txt') ||
+        lower.endsWith('.md') ||
+        lower.endsWith('.png') ||
+        lower.endsWith('.jpg') ||
+        lower.endsWith('.jpeg') ||
+        lower.endsWith('.webp');
+  }
+
+  Future<void> _openPasteTextDialog() async {
+    final appState = context.read<AppState>();
+    if (!appState.settings.isConfigured) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请先在设置中配置 API Key')),
+      );
+      return;
+    }
+    if (appState.importTaskActive) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已有导入任务进行中')),
+      );
+      return;
+    }
+
+    final nameCtrl = TextEditingController(text: '粘贴文本导入');
+    final textCtrl = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('粘贴文本直接导入'),
+        content: SizedBox(
+          width: 480,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameCtrl,
+                decoration: const InputDecoration(
+                  labelText: '题库名称',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: textCtrl,
+                maxLines: 8,
+                minLines: 5,
+                decoration: const InputDecoration(
+                  labelText: '题目文本',
+                  hintText: '直接粘贴题目、选项与答案，AI 将自动切分并结构化入库…',
+                  border: OutlineInputBorder(),
+                  alignLabelWithHint: true,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('开始解析'),
+          ),
+        ],
+      ),
+    );
+    final rawText = textCtrl.text;
+    final bankName = nameCtrl.text;
+    nameCtrl.dispose();
+    textCtrl.dispose();
+
+    if (confirmed != true || rawText.trim().isEmpty || !mounted) return;
+    MJImportTask.discarded = false;
+    unawaited(appState.startBackgroundTextImport(rawText, bankName: bankName));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('已开始后台解析文本，进度见开始页顶部卡片')),
+    );
+    Navigator.pop(context);
   }
 
   @override
@@ -145,7 +239,7 @@ class _ImportScreenState extends State<ImportScreen> {
                       const SizedBox(width: MaoSpace.xs),
                       Expanded(
                         child: Text(
-                          '支持 DOCX / PDF / JSON。DOCX/PDF 解析后先预览题目，可编辑、删除后再确认入库；PDF 自动抽图，插图随题保留。\n旧版 .doc 文件请先用 Word 另存为 .docx。',
+                          '支持 DOCX / PDF / TXT / MD / 图片 / JSON，支持多选合并解析。DOCX 与 PDF 自动抽图，插图随题保留。\n旧版 .doc 文件请先用 Word 另存为 .docx。',
                           style: MaoType.captionStyle
                               .copyWith(color: ac.textSecondary, height: 1.6),
                         ),
@@ -222,15 +316,15 @@ class _ImportScreenState extends State<ImportScreen> {
                         Icon(Icons.cloud_upload_outlined,
                             size: 48, color: ac.textSecondary),
                         const SizedBox(height: 12),
-                        Text('选择文件（DOCX / PDF / JSON）',
+                        Text('选择文件（DOCX / PDF / TXT / MD / 图片 / JSON）',
                             style: TextStyle(
                                 fontSize: MaoType.h3, color: ac.accent)),
                         const SizedBox(height: 4),
-                        Text('AI 将自动识别题目、选项和答案',
+                        Text('AI 将自动识别题目、选项和答案，支持多选合并导入',
                             style: TextStyle(
                                 fontSize: MaoType.body, color: ac.textSecondary)),
                         const SizedBox(height: 4),
-                        Text('PDF 自动抽图，插图随题保留',
+                        Text('DOCX / PDF 自动抽图，图片自动识别文字后切题',
                             style: TextStyle(
                                 fontSize: MaoType.body, color: ac.textSecondary)),
                         const SizedBox(height: 4),
@@ -239,6 +333,48 @@ class _ImportScreenState extends State<ImportScreen> {
                             '导入 .json 题库文件（可多选），无需 AI 解析，题目答案直接入库，完成后显示导入报告',
                             style: TextStyle(
                                 fontSize: MaoType.body, color: ac.textSecondary)),
+                      ],
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 12),
+
+                // 粘贴文本直接导入
+                InkWell(
+                  onTap: isProcessing ? null : _openPasteTextDialog,
+                  borderRadius: BorderRadius.circular(MaoRadius.control),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: MaoSpace.md, vertical: MaoSpace.sm),
+                    decoration: BoxDecoration(
+                      color: ac.card,
+                      borderRadius: BorderRadius.circular(MaoRadius.control),
+                      border: Border.all(color: ac.border),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.content_paste_go,
+                            color: ac.accent, size: 22),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('粘贴文本直接导入',
+                                  style: TextStyle(
+                                      fontSize: MaoType.body,
+                                      fontWeight: FontWeight.w600,
+                                      color: ac.textPrimary)),
+                              Text('无需整理文件，复制题目文本即可 AI 解析',
+                                  style: TextStyle(
+                                      fontSize: MaoType.caption,
+                                      color: ac.textSecondary)),
+                            ],
+                          ),
+                        ),
+                        Icon(Icons.chevron_right, color: ac.textSecondary),
                       ],
                     ),
                   ),
@@ -253,16 +389,12 @@ class _ImportScreenState extends State<ImportScreen> {
                           fontSize: MaoType.body,
                           fontWeight: FontWeight.w600,
                           color: ac.textPrimary)),
-                  // 多选文档只解析第 1 个（应用层如此实现）——选了就得说，
-                  // 否则用户以为剩下的也会被解析
-                  if (_selectedFiles
-                          .where((f) => _isAiDoc(f))
-                          .length >
-                      1) ...[
+                  if (_selectedFiles.where((f) => _isAiDoc(f)).length > 1) ...[
                     const SizedBox(height: 4),
-                    Text('多选文档将只解析第 1 个，其余文件请分次导入',
+                    Text(
+                        '已选 ${_selectedFiles.where((f) => _isAiDoc(f)).length} 份文件/图片，将合并解析到同一预览队列',
                         style: TextStyle(
-                            fontSize: MaoType.body, color: ac.warning)),
+                            fontSize: MaoType.body, color: ac.accent)),
                   ],
                   const SizedBox(height: 8),
                   for (var index = 0; index < _selectedFiles.length; index++)

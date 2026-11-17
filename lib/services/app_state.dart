@@ -204,26 +204,52 @@ class AppState extends ChangeNotifier {
   // v1.0.2 设计审查修复：分块解析失败原因（预览页显性提示，不再伪装 0 题成功）
   List<String> _previewParseErrors = [];
   List<String> get previewParseErrors => _previewParseErrors;
+  List<AIParseChunkFailure> _previewFailedChunks = [];
+  List<AIParseChunkFailure> get previewFailedChunks => _previewFailedChunks;
+  bool _retryingFailedChunks = false;
+  bool get retryingFailedChunks => _retryingFailedChunks;
 
-  /// 解析文件并在预览中展示（不保存到数据库）
+  static bool _isSupportedAiFile(String path) {
+    final lower = path.toLowerCase();
+    return lower.endsWith('.docx') ||
+        lower.endsWith('.doc') ||
+        lower.endsWith('.pdf') ||
+        lower.endsWith('.txt') ||
+        lower.endsWith('.md') ||
+        _isImageFile(lower);
+  }
+
+  static bool _isImageFile(String lowerPath) =>
+      lowerPath.endsWith('.png') ||
+      lowerPath.endsWith('.jpg') ||
+      lowerPath.endsWith('.jpeg') ||
+      lowerPath.endsWith('.webp');
+
+  static String _shiftImagePlaceholders(String text, int offset) {
+    if (offset == 0 || !text.contains('{{img:')) return text;
+    return text.replaceAllMapped(RegExp(r'\{\{img:(\d+)\}\}'), (m) {
+      final n = int.tryParse(m.group(1)!) ?? 0;
+      return '{{img:${n + offset}}}';
+    });
+  }
+
+  /// 解析文件并在预览中展示（不保存到数据库）；支持多文件合并导入
   Future<void> parseForPreview(List<String> filePaths) async {
     _previewQuestions = [];
     _previewParseErrors = [];
+    _previewFailedChunks = [];
     _previewOrphans = {};
     _importProgress = 0;
     _importStatus = '正在解析...';
     notifyListeners();
 
     final files = filePaths
-        .where((p) =>
-            p.toLowerCase().endsWith('.docx') ||
-            p.toLowerCase().endsWith('.doc') ||
-            p.toLowerCase().endsWith('.pdf'))
+        .where(_isSupportedAiFile)
         .map((p) => File(p))
         .toList();
 
     if (files.isEmpty) {
-      _importStatus = '未找到有效的 DOC/DOCX/PDF 文件';
+      _importStatus = '未找到有效的文件（支持 DOCX / PDF / TXT / MD / 图片）';
       notifyListeners();
       return;
     }
@@ -234,112 +260,262 @@ class AppState extends ChangeNotifier {
       return;
     }
 
-    final file = files.first;
-    final fileName = file.path.split('/').last.split('\\').last;
+    final firstFileName = files.first.path.split('/').last.split('\\').last;
+    final firstStem = firstFileName.replaceAll(
+        RegExp(r'\.(docx|doc|pdf|txt|md|png|jpg|jpeg|webp)$',
+            caseSensitive: false),
+        '');
+    _previewBankName =
+        files.length > 1 ? '$firstStem 等 ${files.length} 份' : firstStem;
 
-    final isPdf = file.path.toLowerCase().endsWith('.pdf');
-    String rawText = '';
-    var imagePool = <int, QuestionImage>{};
-    var scannedPdf = false;
-    if (isPdf) {
-      // PDF：本地抽图文（图片是题目的一部分，随 {{img:N}} 占位符进解析流）
-      _previewBankName =
-          fileName.replaceAll(RegExp(r'\.pdf$', caseSensitive: false), '');
-      _importStatus = '正在提取 PDF 图文...';
-      notifyListeners();
-      try {
-        final extracted = await PdfImportService.extract(file.path);
-        rawText = extracted.rawText;
-        imagePool = extracted.imagePool;
-      } on PdfExtractException catch (e) {
-        if (!e.scanned) {
-          _importStatus = '「$fileName」${e.message}';
+    final mergedText = StringBuffer();
+    final imagePool = <int, QuestionImage>{};
+    var slotOffset = 0;
+    final fallbackVisionPages = <Uint8List>[];
+
+    for (var fi = 0; fi < files.length; fi++) {
+      final file = files[fi];
+      final fileName = file.path.split('/').last.split('\\').last;
+      final lower = file.path.toLowerCase();
+      final prefix = files.length > 1 ? '(${fi + 1}/${files.length}) ' : '';
+
+      if (lower.endsWith('.pdf')) {
+        _importStatus = '$prefix正在提取 PDF 图文...';
+        notifyListeners();
+        try {
+          final extracted = await PdfImportService.extract(file.path);
+          if (extracted.rawText.trim().isNotEmpty) {
+            mergedText
+              ..writeln(_shiftImagePlaceholders(extracted.rawText, slotOffset))
+              ..writeln();
+          }
+          for (final entry in extracted.imagePool.entries) {
+            final newSlot = entry.key + slotOffset;
+            imagePool[newSlot] = entry.value.asDraftAt(newSlot);
+          }
+          if (extracted.imagePool.isNotEmpty) {
+            slotOffset = imagePool.keys.reduce((a, b) => a > b ? a : b);
+          }
+        } on PdfExtractException catch (e) {
+          if (!e.scanned) {
+            _importStatus = '「$fileName」${e.message}';
+            notifyListeners();
+            return;
+          }
+          _importStatus = '$prefix扫描版 PDF：提取页图...';
+          notifyListeners();
+          final pages = await PdfImportService.extractScannedPages(file.path,
+              onProgress: (d, t) {
+            _importStatus = '$prefix扫描版 PDF：提取页图 ($d/$t 页)';
+            notifyListeners();
+          });
+          if (pages.isEmpty) {
+            _importStatus = '「$fileName」页面提取失败，无法识别';
+            notifyListeners();
+            return;
+          }
+          await _ingestImagePages(pages, mergedText, fallbackVisionPages,
+              prefix: '${prefix}扫描版 PDF：');
+        }
+      } else if (_isImageFile(lower)) {
+        _importStatus = '$prefix正在读取图片 $fileName...';
+        notifyListeners();
+        final bytes = await file.readAsBytes();
+        await _ingestImagePages([bytes], mergedText, fallbackVisionPages,
+            prefix: '${prefix}图片识别：');
+      } else if (lower.endsWith('.txt') || lower.endsWith('.md')) {
+        _importStatus = '$prefix正在读取文本 $fileName...';
+        notifyListeners();
+        final text = await DocParserService.extractPlainText(file.path);
+        if (text.trim().isNotEmpty) {
+          mergedText
+            ..writeln(text)
+            ..writeln();
+        }
+      } else {
+        // DOCX / DOC
+        final format = DocParserService.detectFormat(file.path);
+        if (format == 'doc') {
+          _importStatus =
+              '「$fileName」是旧版 .doc 格式，不兼容。\n请用 Word 打开 → 文件 → 另存为 → .docx';
           notifyListeners();
           return;
         }
-        // 扫描件/图片字：字画在图里、无文字层——改走视觉切题通道
-        scannedPdf = true;
-      }
-    } else {
-      // 检测格式：不允许旧版二进制 .doc
-      final format = DocParserService.detectFormat(file.path);
-      if (format == 'doc') {
-        _importStatus =
-            '「$fileName」是旧版 .doc 格式，不兼容。\n请用 Word 打开 → 文件 → 另存为 → .docx';
+        if (format != 'docx') {
+          _importStatus = '「$fileName」不是有效的 DOCX 文件';
+          notifyListeners();
+          return;
+        }
+        _importStatus = '$prefix正在提取 DOCX 图文...';
         notifyListeners();
-        return;
+        final extracted =
+            await DocParserService.extractDocxWithImages(file.path);
+        if (extracted.rawText.trim().isNotEmpty) {
+          mergedText
+            ..writeln(_shiftImagePlaceholders(extracted.rawText, slotOffset))
+            ..writeln();
+        }
+        for (final entry in extracted.imagePool.entries) {
+          final newSlot = entry.key + slotOffset;
+          imagePool[newSlot] = entry.value.asDraftAt(newSlot);
+        }
+        if (extracted.imagePool.isNotEmpty) {
+          slotOffset = imagePool.keys.reduce((a, b) => a > b ? a : b);
+        }
       }
-      if (format != 'docx') {
-        _importStatus = '「$fileName」不是有效的 DOCX 文件';
-        notifyListeners();
-        return;
-      }
-      _previewBankName = fileName.replaceAll(
-          RegExp(r'\.(docx|doc)$', caseSensitive: false), '');
-      rawText = await DocParserService.extractRawText(file.path);
     }
 
-    final AIParseResult result;
-    if (scannedPdf) {
-      // 扫描件：先端上 OCR 认出文字层（离线、免 Key），认得出就照普通
-      // 题库文档走 AI 切题——任何文本模型都能吃；认不出再退视觉切题
-      _importStatus = '扫描版 PDF：提取页图...';
-      notifyListeners();
-      final pages = await PdfImportService.extractScannedPages(file.path,
-          onProgress: (d, t) {
-        _importStatus = '扫描版 PDF：提取页图 ($d/$t 页)';
-        notifyListeners();
-      });
-      if (pages.isEmpty) {
-        _importStatus = '「$fileName」页面提取失败，无法识别';
-        notifyListeners();
-        return;
-      }
+    final combinedQuestions = <Question>[];
+    final combinedErrors = <String>[];
+    final combinedFailures = <AIParseChunkFailure>[];
 
-      var ocrText = '';
-      if (OcrService.isSupported) {
-        final pageTexts = <String>[];
-        for (var i = 0; i < pages.length; i++) {
-          _importStatus = '扫描版 PDF：识别文字 (${i + 1}/${pages.length} 页)';
-          notifyListeners();
-          pageTexts.add(await OcrService.recognizeImage(pages[i]) ?? '');
-        }
-        ocrText = OcrService.mergePageTexts(pageTexts);
-      }
-
-      if (ocrText.trim().length >= 100) {
-        // OCR 认出了可用文字层：与文字版 PDF 同路，文本模型即可切题
-        result =
-            await _aiService!.parseQuestionsFromRawText(ocrText, 0, (d, t) {
-          _importStatus = '扫描版 PDF：AI 切题 ($d/$t 块)';
-          _importProgress =
-              (_bgProgressBase + _bgProgressSpan * (t > 0 ? d / t : 0))
-                  .clamp(0.0, 1.0);
-          notifyListeners();
-        });
-      } else {
-        // OCR 不可用/认不出（如 Windows 端或版式太花）：退视觉切题
-        result =
-            await _aiService!.parseQuestionsFromPageImages(pages, 0, (d, t) {
-          _importStatus = '扫描版 PDF：视觉切题 ($d/$t 页)';
-          _importProgress =
-              (_bgProgressBase + _bgProgressSpan * (t > 0 ? d / t : 0))
-                  .clamp(0.0, 1.0);
-          notifyListeners();
-        });
-      }
-    } else {
+    final rawText = mergedText.toString().trim();
+    if (rawText.isNotEmpty) {
       _importStatus = 'AI 解析中...';
       notifyListeners();
-      result = await _aiService!.parseQuestionsFromRawText(rawText, 0, (d, t) {
+      final textRes =
+          await _aiService!.parseQuestionsFromRawText(rawText, 0, (d, t) {
         _importStatus = 'AI 解析中 ($d/$t 块)';
-        // v1.27 进度精确化：按分块推进进度条（映射到当前阶段跨度内）
         _importProgress =
             (_bgProgressBase + _bgProgressSpan * (t > 0 ? d / t : 0))
                 .clamp(0.0, 1.0);
         notifyListeners();
       });
+      combinedQuestions.addAll(textRes.questions);
+      combinedErrors.addAll(textRes.errors);
+      combinedFailures.addAll(textRes.failedChunkRecords);
     }
+
+    if (fallbackVisionPages.isNotEmpty) {
+      final visionRes = await _aiService!
+          .parseQuestionsFromPageImages(fallbackVisionPages, 0, (d, t) {
+        _importStatus = '视觉识别切题 ($d/$t 页)';
+        _importProgress =
+            (_bgProgressBase + _bgProgressSpan * (t > 0 ? d / t : 0))
+                .clamp(0.0, 1.0);
+        notifyListeners();
+      });
+      combinedQuestions.addAll(visionRes.questions);
+      combinedErrors.addAll(visionRes.errors);
+    }
+
+    if (rawText.isEmpty && fallbackVisionPages.isEmpty) {
+      _importStatus = '未能从所选文件中提取出有效文本或图片内容';
+      notifyListeners();
+      return;
+    }
+
+    _finishPreviewResult(
+      AIParseResult(
+        combinedQuestions,
+        combinedErrors.length,
+        combinedErrors,
+        failedChunkRecords: combinedFailures,
+      ),
+      imagePool: imagePool,
+    );
+  }
+
+  Future<void> _ingestImagePages(
+    List<Uint8List> pages,
+    StringBuffer textOut,
+    List<Uint8List> visionFallbackOut, {
+    String prefix = '',
+  }) async {
+    if (OcrService.isSupported) {
+      final pageTexts = <String>[];
+      for (var i = 0; i < pages.length; i++) {
+        _importStatus = '${prefix}识别文字 (${i + 1}/${pages.length} 页)';
+        notifyListeners();
+        pageTexts.add(await OcrService.recognizeImage(pages[i]) ?? '');
+      }
+      final ocrText = OcrService.mergePageTexts(pageTexts);
+      if (ocrText.trim().length >= 30) {
+        textOut
+          ..writeln(ocrText)
+          ..writeln();
+        return;
+      }
+    }
+    visionFallbackOut.addAll(pages);
+  }
+
+  /// 直接从粘贴的纯文本解析预览（不保存到数据库）。
+  Future<void> parseRawTextForPreview(
+    String rawText, {
+    String bankName = '粘贴文本导入',
+  }) async {
+    _previewQuestions = [];
+    _previewParseErrors = [];
+    _previewFailedChunks = [];
+    _previewOrphans = {};
+    _previewBankName =
+        bankName.trim().isEmpty ? '粘贴文本导入' : bankName.trim();
+    _importProgress = 0;
+    _importStatus = 'AI 解析中...';
+    notifyListeners();
+
+    if (rawText.trim().isEmpty) {
+      _importStatus = '请先输入或粘贴题目文本';
+      notifyListeners();
+      return;
+    }
+    if (!_settings.isConfigured || _aiService == null) {
+      _importStatus = '请先在设置中配置 API Key';
+      notifyListeners();
+      return;
+    }
+
+    final result =
+        await _aiService!.parseQuestionsFromRawText(rawText, 0, (d, t) {
+      _importStatus = 'AI 解析中 ($d/$t 块)';
+      _importProgress =
+          (_bgProgressBase + _bgProgressSpan * (t > 0 ? d / t : 0))
+              .clamp(0.0, 1.0);
+      notifyListeners();
+    });
+    _finishPreviewResult(result);
+  }
+
+  /// 仅重试预览中失败的分块，并将新增题目合并进当前预览。
+  Future<void> retryFailedPreviewChunks() async {
+    if (_retryingFailedChunks ||
+        _previewFailedChunks.isEmpty ||
+        _aiService == null) {
+      return;
+    }
+    _retryingFailedChunks = true;
+    _importStatus = '正在重试 ${_previewFailedChunks.length} 个失败分块...';
+    notifyListeners();
+    try {
+      final res = await _aiService!.retryFailedChunks(
+          _previewFailedChunks, 0, (d, t) {
+        _importStatus = '重试失败分块 ($d/$t)';
+        notifyListeners();
+      });
+      if (res.questions.isNotEmpty) {
+        final materialized = materializeQuestionImages(
+          questions: res.questions,
+          pool: _previewOrphans,
+        );
+        _previewQuestions = [..._previewQuestions, ...materialized.questions];
+        _previewOrphans = materialized.orphans;
+      }
+      _previewFailedChunks = res.failedChunkRecords;
+      _previewParseErrors = res.errors;
+      _importStatus = res.errors.isEmpty
+          ? '重试完成，共 ${_previewQuestions.length} 道题目'
+          : '重试完成，仍有 ${res.errors.length} 个分块失败';
+    } finally {
+      _retryingFailedChunks = false;
+      notifyListeners();
+    }
+  }
+
+  void _finishPreviewResult(
+    AIParseResult result, {
+    Map<int, QuestionImage> imagePool = const {},
+  }) {
     // 配图物化：全局槽位重编为题内槽位；丢 token 的图按期望题序补挂，
     // 挂不上的显性进「待指派」，绝不静默丢图
     final materialized =
@@ -347,6 +523,7 @@ class AppState extends ChangeNotifier {
     _previewQuestions = materialized.questions;
     _previewOrphans = materialized.orphans;
     _previewParseErrors = result.errors;
+    _previewFailedChunks = result.failedChunkRecords;
 
     // v1.0.2 设计审查修复：失败块显性提示，不再「解析完成，共 0 道题目」假成功
     if (_previewQuestions.isEmpty && _previewParseErrors.isNotEmpty) {
@@ -355,7 +532,7 @@ class AppState extends ChangeNotifier {
       return;
     }
     _importStatus = '解析完成，共 ${_previewQuestions.length} 道题目，请预览确认'
-        '${_previewParseErrors.isNotEmpty ? '（${_previewParseErrors.length} 个分块失败，已跳过）' : ''}';
+        '${_previewParseErrors.isNotEmpty ? '（${_previewParseErrors.length} 个分块失败，可在预览页重试）' : ''}';
     notifyListeners();
   }
 
@@ -488,6 +665,9 @@ class AppState extends ChangeNotifier {
   /// 清空预览
   void clearPreview() {
     _previewQuestions = [];
+    _previewParseErrors = [];
+    _previewFailedChunks = [];
+    _previewOrphans = {};
     _previewBankName = '';
     _importStatus = "";
     _importProgress = 0;
@@ -952,15 +1132,10 @@ class AppState extends ChangeNotifier {
         await _loadBanks();
       }
 
-      // 阶段二：DOC/DOCX/PDF AI 解析（按分块推进；解析完待预览确认）
+      // 阶段二：DOCX/PDF/TXT/MD/图片 AI 解析（按分块推进；解析完待预览确认）
       if (hasAi) {
         _bgProgressBase = jsonSpan;
         _bgProgressSpan = 1 - jsonSpan;
-        if (aiFiles.length > 1) {
-          _importStatus =
-              '已选 ${aiFiles.length} 个文档，本次仅解析第一个：${_fileName(aiFiles.first)}';
-          notifyListeners();
-        }
         await parseForPreview(aiFiles);
       }
     } catch (e) {
@@ -1017,6 +1192,48 @@ class AppState extends ChangeNotifier {
     if (jsonFiles.isNotEmpty) {
       await _loadHomeStats(); // JSON 已入库，首页统计同步刷新。
     }
+    notifyListeners();
+  }
+
+  /// 后台导入：粘贴纯文本走 AI 解析，完成后待预览确认。
+  Future<void> startBackgroundTextImport(
+    String rawText, {
+    String bankName = '粘贴文本导入',
+  }) async {
+    if (_importTaskActive) return;
+    if (rawText.trim().isEmpty) return;
+    _importTaskActive = true;
+    _importProgress = 0;
+    _importStatus = '准备解析文本...';
+    _bgProgressBase = 0;
+    _bgProgressSpan = 1;
+    notifyListeners();
+
+    try {
+      await parseRawTextForPreview(rawText, bankName: bankName);
+    } catch (e) {
+      _importStatus = '导入异常：$e';
+    }
+
+    final result = _previewQuestions.isNotEmpty
+        ? ImportTaskResult(
+            kind: ImportTaskKind.docxParse,
+            success: true,
+            message: 'AI 解析完成，共 ${_previewQuestions.length} 道题目，请预览确认后入库',
+            questionCount: _previewQuestions.length,
+          )
+        : ImportTaskResult(
+            kind: ImportTaskKind.docxParse,
+            success: false,
+            message: '解析失败：$_importStatus',
+            questionCount: 0,
+          );
+
+    _importTaskActive = false;
+    _importProgress = 1;
+    _pendingImportResult = result;
+    _bgProgressBase = 0;
+    _bgProgressSpan = 1;
     notifyListeners();
   }
 
@@ -1388,6 +1605,9 @@ class AppState extends ChangeNotifier {
     await _db.saveFollowUpMessage(qId, 'assistant', reply);
   }
 
+  /// 主动加载当前题解析（主观题/大题点击「查看答案与解析」时调用）
+  Future<void> loadCurrentAnalysis() => _loadAnalysis();
+
   void nextQuestion() {
     if (_quizService.hasNext) {
       _quizService.nextQuestion();
@@ -1405,6 +1625,131 @@ class AppState extends ChangeNotifier {
       _restoreAnswerState();
       notifyListeners();
     }
+  }
+
+  // ======================== 期末突击（速成）模式 ========================
+  int _cramInitialCount = 0;
+  int _cramMasteredInRound = 0;
+  int get cramInitialCount => _cramInitialCount;
+  int get cramMasteredInRound => _cramMasteredInRound;
+
+  /// 启动期末突击（当轮闭环）会话：不走长期 FSRS 曲线，不污染正式答题统计。
+  Future<int> startCramSession({
+    List<int>? bankIds,
+    String? knowledgePoint,
+    bool onlyUnmastered = false,
+  }) async {
+    final ids = bankIds ??
+        (_selectedBankIds.isNotEmpty
+            ? _selectedBankIds.toList()
+            : _banks.map((b) => b.id!).toList());
+    if (ids.isEmpty) return 0;
+
+    var qs = await _db.getQuestionsByBanks(ids, random: false);
+    if (knowledgePoint != null) {
+      qs = qs.where((q) {
+        final kp = (q.knowledgePoint ?? '').trim();
+        final label = kp.isEmpty ? '未分类' : kp;
+        return label == knowledgePoint;
+      }).toList();
+    }
+    if (onlyUnmastered && qs.isNotEmpty) {
+      final statuses = await _db.getCramStatusesByBank(ids);
+      qs = qs.where((q) => statuses[q.id] != 'mastered').toList();
+    }
+    if (qs.isEmpty) return 0;
+
+    _cramInitialCount = qs.length;
+    _cramMasteredInRound = 0;
+
+    _quizService.startCustomSession(
+      questions: qs,
+      bankIds: ids,
+      mode: 'cram',
+    );
+    _currentSession = _quizService.currentSession;
+    _quizQuestions = await _withImages(_quizService.questions);
+    _currentQuestionIndex = 0;
+    _currentAnalysis = null;
+    _lastAnswerRecord = null;
+    _clearQuestionContext();
+    _analysisLoading = false;
+    _answerHistory.clear();
+    _answerHistory.length = _quizQuestions.length;
+    notifyListeners();
+    return qs.length;
+  }
+
+  /// 提交期末突击自评（again=插回后第4题 / hard=放本轮末尾 / mastered=移出本轮）。
+  /// 返回 true 表示本轮还有下一题，false 表示本轮全部清零完成。
+  Future<bool> submitCramRating(String rating) async {
+    final q = currentQuestion;
+    if (q == null) return false;
+    if (q.id != null) {
+      await _db.setCramStatus(q.id!, rating);
+    }
+    if (rating == 'again') {
+      _quizService.requeueCurrentQuestion(offsetFromCurrent: 4);
+    } else if (rating == 'hard') {
+      _quizService.requeueCurrentQuestion();
+    } else if (rating == 'mastered') {
+      _cramMasteredInRound++;
+    }
+    _quizQuestions = _quizService.questions;
+    _answerHistory.length = _quizQuestions.length;
+
+    if (_quizService.hasNext) {
+      _quizService.nextQuestion();
+      _currentQuestionIndex = _quizService.currentIndex;
+      _restoreAnswerState();
+      notifyListeners();
+      return true;
+    }
+    notifyListeners();
+    return false;
+  }
+
+  /// 背题题型（recite）在普通刷题中的当轮回炉：不走长期 FSRS 曲线，
+  /// 「不会」插回后第 4 题，「模糊」放本轮末尾。
+  Future<bool> requeueReciteQuestion(String rating) async {
+    final q = currentQuestion;
+    if (q == null) return false;
+    if (q.id != null) {
+      await _db.setCramStatus(q.id!, rating);
+    }
+    if (rating == 'again') {
+      _quizService.requeueCurrentQuestion(offsetFromCurrent: 4);
+    } else if (rating == 'hard') {
+      _quizService.requeueCurrentQuestion();
+    }
+    _quizQuestions = _quizService.questions;
+    _answerHistory.length = _quizQuestions.length;
+    if (_quizService.hasNext) {
+      _quizService.nextQuestion();
+      _currentQuestionIndex = _quizService.currentIndex;
+      _restoreAnswerState();
+      notifyListeners();
+      return true;
+    }
+    notifyListeners();
+    return false;
+  }
+
+  Future<List<({String kp, int total, int mastered, int needReview})>>
+      getCramProgressByKnowledgePoint({List<int>? bankIds}) {
+    final ids = bankIds ??
+        (_selectedBankIds.isNotEmpty
+            ? _selectedBankIds.toList()
+            : _banks.map((b) => b.id!).toList());
+    return _db.getCramProgressByKnowledgePoint(ids);
+  }
+
+  Future<void> resetCramStatuses({List<int>? bankIds}) {
+    final ids = bankIds ??
+        (_selectedBankIds.isNotEmpty
+            ? _selectedBankIds.toList()
+            : _banks.map((b) => b.id!).toList());
+    return _db.resetCramStatuses(ids);
   }
 
   /// 直接跳转到指定题号（答题卡/底部圆点）。

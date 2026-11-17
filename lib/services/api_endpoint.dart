@@ -122,6 +122,51 @@ class ApiEndpoint {
     return chat.replace(path: '$p/models');
   }
 
+  /// 是否为 Google Gemini 原生 REST 协议地址（排除 `/openai` 兼容路径）。
+  static bool isGeminiNative(String rawEndpoint) {
+    var s = rawEndpoint.trim();
+    if (s.isEmpty) return false;
+    if (!s.contains('://')) s = 'https://$s';
+    final uri = Uri.tryParse(s);
+    if (uri == null) return false;
+    final host = uri.host.toLowerCase();
+    final path = uri.path.toLowerCase();
+    return host.contains('generativelanguage.googleapis.com') &&
+        !path.contains('/openai');
+  }
+
+  /// 构造 Google Gemini 原生 `:generateContent` 或 `:streamGenerateContent?alt=sse` 地址。
+  static Uri geminiGenerateUri(String rawEndpoint, String model,
+      {bool stream = false}) {
+    final base = _geminiBaseUri(rawEndpoint);
+    var cleanModel = model.trim();
+    if (cleanModel.startsWith('models/')) {
+      cleanModel = cleanModel.substring('models/'.length);
+    }
+    if (cleanModel.isEmpty) cleanModel = 'gemini-2.5-flash';
+    final action = stream ? 'streamGenerateContent' : 'generateContent';
+    final uri = base.replace(path: '${base.path}/models/$cleanModel:$action');
+    return stream ? uri.replace(queryParameters: {'alt': 'sse'}) : uri;
+  }
+
+  /// 构造 Google Gemini 原生模型列表端点 `GET /v1beta/models`。
+  static Uri geminiModelsUri(String rawEndpoint) {
+    final base = _geminiBaseUri(rawEndpoint);
+    return base.replace(path: '${base.path}/models');
+  }
+
+  static Uri _geminiBaseUri(String rawEndpoint) {
+    var s = rawEndpoint.trim();
+    if (!s.contains('://')) s = 'https://$s';
+    while (s.endsWith('/')) {
+      s = s.substring(0, s.length - 1);
+    }
+    final uri = Uri.tryParse(s) ??
+        Uri.parse('https://generativelanguage.googleapis.com/v1beta');
+    final path = uri.path.isEmpty || uri.path == '/' ? '/v1beta' : uri.path;
+    return uri.replace(path: path);
+  }
+
   /// 余额查询地址：官方 DeepSeek 用专用接口，其余供应商按通用路径尝试
   static Uri balanceUrl(Uri chatUri) =>
       Uri(scheme: chatUri.scheme, host: chatUri.host, path: '/user/balance');
