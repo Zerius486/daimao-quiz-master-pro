@@ -350,7 +350,7 @@ void main() {
 
       // 本机批注
       await AnnotationService.instance.save(qid, [
-        InkStroke(pts: [0.1, 0.1, 0.2, 0.2], color: 0xFF212121, width: 2.0),
+        const InkStroke(pts: [0.1, 0.1, 0.2, 0.2], color: 0xFF212121, width: 2.0),
       ]);
 
       // 对端同一题推送自己的批注
@@ -366,7 +366,7 @@ void main() {
             'question_uid': questionUid,
             'device_id': remoteDevice,
             'data': InkStroke.encodeList([
-              InkStroke(pts: [0.9, 0.9], color: 0xFF0000FF, width: 5.0),
+              const InkStroke(pts: [0.9, 0.9], color: 0xFF0000FF, width: 5.0),
             ]),
             'updated_at': '2025-02-03T00:00:00',
           }
@@ -385,7 +385,7 @@ void main() {
 
       // 本机保存不覆盖他端，他端重复推送也不覆盖本机
       await AnnotationService.instance.save(qid, [
-        InkStroke(pts: [0.3, 0.3, 0.4, 0.4], color: 0xFF212121, width: 2.0),
+        const InkStroke(pts: [0.3, 0.3, 0.4, 0.4], color: 0xFF212121, width: 2.0),
       ]);
       await repo.importSnapshot({
         'device_id': remoteDevice,
@@ -399,7 +399,7 @@ void main() {
             'question_uid': questionUid,
             'device_id': remoteDevice,
             'data': InkStroke.encodeList([
-              InkStroke(pts: [0.8, 0.8], color: 0xFF00FF00, width: 5.0),
+              const InkStroke(pts: [0.8, 0.8], color: 0xFF00FF00, width: 5.0),
             ]),
             'updated_at': '2025-02-04T00:00:00',
           }
@@ -433,7 +433,7 @@ void main() {
       await db.addToErrorBook(qid); // 本机收藏
 
       // 对端会话 + 作答 + 同一题错题
-      final remoteSessionUid = 'sess-uid-1';
+      const remoteSessionUid = 'sess-uid-1';
       await repo.importSnapshot({
         'device_id': remoteDevice,
         'banks': <Map<String, dynamic>>[],
@@ -628,7 +628,7 @@ void main() {
 
   group('设备发现（信标）', () {
     test('信标编解码往返 + 他应用/垃圾数据拒绝', () {
-      final beacon =
+      const beacon =
           SyncBeacon(deviceId: 'dev-1', deviceName: '猫卷-Android', port: 51630);
       final decoded = SyncBeacon.decode(beacon.encode());
       expect(decoded, isNotNull);
@@ -655,8 +655,8 @@ void main() {
       discovery.onPeerDiscovered = (_) => discovered++;
       discovery.onPeersChanged = () => changed++;
 
-      final peerBeacon =
-          const SyncBeacon(deviceId: 'peer-1', deviceName: '平板', port: 51630);
+      const peerBeacon =
+          SyncBeacon(deviceId: 'peer-1', deviceName: '平板', port: 51630);
       discovery.handleDatagram(
           Uint8List.fromList(utf8.encode(peerBeacon.encode())),
           InternetAddress('192.168.1.2'));
@@ -672,7 +672,7 @@ void main() {
       expect(discovered, 1);
 
       // 自己的信标回环忽略
-      final selfBeacon = const SyncBeacon(
+      const selfBeacon = SyncBeacon(
           deviceId: 'self-device', deviceName: '本机', port: 51630);
       discovery.handleDatagram(
           Uint8List.fromList(utf8.encode(selfBeacon.encode())),
@@ -680,7 +680,7 @@ void main() {
       expect(discovery.peers.length, 1);
 
       // 改名触发变更通知
-      final renamed = const SyncBeacon(
+      const renamed = SyncBeacon(
           deviceId: 'peer-1', deviceName: '平板-新名', port: 51630);
       discovery.handleDatagram(
           Uint8List.fromList(utf8.encode(renamed.encode())),

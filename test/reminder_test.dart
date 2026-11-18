@@ -31,7 +31,7 @@ void main() {
     test('字符串比较语义', () {
       expect(('1' == '1'), isTrue);
       expect(('0' == '1'), isFalse);
-      expect((null ?? '0') == '1', isFalse);
+      expect(('0') == '1', isFalse);
     });
   });
 }

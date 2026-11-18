@@ -29,7 +29,7 @@ void main() {
 
   group('InkStroke 模型', () {
     test('JSON 序列化往返（含笔型）', () {
-      final s = InkStroke(
+      const s = InkStroke(
         pts: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
         color: 0xFFE53935,
         width: 3.0,
@@ -44,8 +44,8 @@ void main() {
 
     test('整组编解码往返 + 损坏数据容错', () {
       final strokes = [
-        InkStroke(pts: [0.1, 0.1, 0.2, 0.2], color: 0xFF212121, width: 1.5),
-        InkStroke(pts: [0.5, 0.5], color: 0xFF1E88E5, width: 3.0), // 单点笔迹
+        const InkStroke(pts: [0.1, 0.1, 0.2, 0.2], color: 0xFF212121, width: 1.5),
+        const InkStroke(pts: [0.5, 0.5], color: 0xFF1E88E5, width: 3.0), // 单点笔迹
       ];
       final decoded = InkStroke.decodeList(InkStroke.encodeList(strokes));
       expect(decoded.length, 2); // 单点也是有效笔迹（画圆点）
@@ -55,8 +55,8 @@ void main() {
     });
 
     test('hitTest 命中与容差（像素坐标转归一化）', () {
-      final canvas = const Size(400, 800);
-      final s = InkStroke(
+      const canvas = Size(400, 800);
+      const s = InkStroke(
           pts: [0.5, 0.5, 0.5, 0.6], // 画布上 (200,400)-(200,480)
           color: 0xFF212121,
           width: 3.0);
@@ -68,7 +68,7 @@ void main() {
     });
 
     test('translate 平移并 clamp 到画布内', () {
-      final s = InkStroke(
+      const s = InkStroke(
           pts: [0.05, 0.05, 0.95, 0.95], color: 0xFF212121, width: 3.0);
       final moved = s.translate(0.1, -0.2);
       expect(moved.pts[0], closeTo(0.15, 1e-9));
@@ -94,8 +94,8 @@ void main() {
     test('橡皮擦整笔删除 + 选择/移动/删除', () {
       final c = AnnotationController();
       c.loadFrom([
-        InkStroke(pts: [0.2, 0.2, 0.4, 0.4], color: 0xFF212121, width: 3.0),
-        InkStroke(pts: [0.6, 0.6, 0.8, 0.8], color: 0xFF212121, width: 3.0),
+        const InkStroke(pts: [0.2, 0.2, 0.4, 0.4], color: 0xFF212121, width: 3.0),
+        const InkStroke(pts: [0.6, 0.6, 0.8, 0.8], color: 0xFF212121, width: 3.0),
       ]);
       const canvas = Size(400, 400);
 
@@ -134,9 +134,9 @@ void main() {
       expect(await svc.load(qid), isEmpty); // 初始无批注
 
       final strokes = [
-        InkStroke(pts: [0.1, 0.1, 0.2, 0.2], color: 0xFFE53935, width: 3.0,
+        const InkStroke(pts: [0.1, 0.1, 0.2, 0.2], color: 0xFFE53935, width: 3.0,
             penType: PenType.normal),
-        InkStroke(pts: [0.5, 0.5, 0.6, 0.6], color: 0xFF43A047, width: 10.0,
+        const InkStroke(pts: [0.5, 0.5, 0.6, 0.6], color: 0xFF43A047, width: 10.0,
             penType: PenType.highlighter),
       ];
       await svc.save(qid, strokes);
@@ -165,7 +165,7 @@ void main() {
       final qs = await db.getQuestionsByBank(bankId);
       final qid = qs.first.id!;
       await AnnotationService.instance.save(qid, [
-        InkStroke(pts: [0.1, 0.1, 0.2, 0.2], color: 0xFF212121, width: 3.0),
+        const InkStroke(pts: [0.1, 0.1, 0.2, 0.2], color: 0xFF212121, width: 3.0),
       ]);
       expect(await AnnotationService.instance.load(qid), isNotEmpty);
 

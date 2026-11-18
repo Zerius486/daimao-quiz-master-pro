@@ -58,7 +58,7 @@ class AiResponseWidget extends StatelessWidget {
       if (t.startsWith(r'$$') || t.startsWith(r'\[')) {
         final isDollar = t.startsWith(r'$$');
         final closeDelim = isDollar ? r'$$' : r'\]';
-        final openLen = 2;
+        const openLen = 2;
         final sameLineClose = t.indexOf(closeDelim, openLen);
         if (sameLineClose != -1 &&
             sameLineClose + closeDelim.length == t.length) {
@@ -253,7 +253,7 @@ class AiResponseWidget extends StatelessWidget {
         if (L.leading.isNotEmpty) TextSpan(text: L.leading),
         ..._inline(L.content, ls, ac),
       ]));
-      spans.add(TextSpan(text: '\n'));
+      spans.add(const TextSpan(text: '\n'));
     }
     return Text.rich(TextSpan(children: spans));
   }

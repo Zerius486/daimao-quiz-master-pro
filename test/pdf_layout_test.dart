@@ -17,8 +17,8 @@ void main() {
     test('同一视觉行的不同片段合并成一行，行内按左右排序、空隙补空格', () {
       // 两片段同高同带（垂直重叠过半）→ 一行；水平相隔 20pt → 中间补空格
       final items = [
-        PdfTextItem('诊断', (left: 100, top: 700, right: 140, bottom: 686)),
-        PdfTextItem('是', (left: 160, top: 701, right: 180, bottom: 687)),
+        const PdfTextItem('诊断', (left: 100, top: 700, right: 140, bottom: 686)),
+        const PdfTextItem('是', (left: 160, top: 701, right: 180, bottom: 687)),
       ];
       final lines = groupTextLines(items);
       expect(lines, hasLength(1));
@@ -36,8 +36,8 @@ void main() {
 
     test('紧邻片段不补空格（连续中英文）', () {
       final items = [
-        PdfTextItem('心电图', (left: 50, top: 700, right: 110, bottom: 686)),
-        PdfTextItem('诊断', (left: 111, top: 700, right: 151, bottom: 686)),
+        const PdfTextItem('心电图', (left: 50, top: 700, right: 110, bottom: 686)),
+        const PdfTextItem('诊断', (left: 111, top: 700, right: 151, bottom: 686)),
       ];
       expect(groupTextLines(items).single.text, '心电图诊断');
     });
@@ -113,7 +113,7 @@ void main() {
         qline(700, '1．下图所示心电图最可能的诊断是'),
         qline(400, 'A．窦性心动过速'),
       ];
-      final fig = (left: 150.0, top: 640.0, right: 450.0, bottom: 460.0);
+      const fig = (left: 150.0, top: 640.0, right: 450.0, bottom: 460.0);
       final flow = assemblePageFlow(
         lines: lines,
         figures: [fig],
@@ -131,7 +131,7 @@ void main() {
         qline(700, '1．上一题的选项 D'),
         qline(300, '2．如上图所示，病变部位是'),
       ];
-      final fig = (left: 150.0, top: 486.0, right: 450.0, bottom: 326.0);
+      const fig = (left: 150.0, top: 486.0, right: 450.0, bottom: 326.0);
       final flow = assemblePageFlow(
         lines: lines,
         figures: [fig],
@@ -148,7 +148,7 @@ void main() {
         qline(700, '1．上一题的选项 D'),
         qline(200, '2．下一题'),
       ];
-      final fig = (left: 150.0, top: 640.0, right: 450.0, bottom: 500.0);
+      const fig = (left: 150.0, top: 640.0, right: 450.0, bottom: 500.0);
       final flow = assemblePageFlow(
         lines: lines,
         figures: [fig],
@@ -159,8 +159,8 @@ void main() {
 
     test('多张前置图按 y 自上而下挂在同一行后', () {
       final lines = [qline(200, '3．如上两图所示')];
-      final fig1 = (left: 50.0, top: 640.0, right: 300.0, bottom: 520.0);
-      final fig2 = (left: 50.0, top: 480.0, right: 300.0, bottom: 360.0);
+      const fig1 = (left: 50.0, top: 640.0, right: 300.0, bottom: 520.0);
+      const fig2 = (left: 50.0, top: 480.0, right: 300.0, bottom: 360.0);
       final flow = assemblePageFlow(
         lines: lines,
         figures: [fig1, fig2],

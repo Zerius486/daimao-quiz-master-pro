@@ -380,19 +380,17 @@ class DocParserService {
         if (line.length < 80 && !line.contains('。') && !line.contains('；')) {
           options.add(line);
         } else if (correctAnswer == null && analysis == null) {
-          analysis = (analysis ?? '') + '\n$line';
+          analysis = '${analysis ?? ''}\n$line';
         }
       } else if (correctAnswer == null && analysis == null) {
-        analysis = (analysis ?? '') + '\n$line';
+        analysis = '${analysis ?? ''}\n$line';
       }
     }
 
     if (title.trim().isEmpty) return null;
 
     // 尝试从所有文本中提取答案
-    if (correctAnswer == null) {
-      correctAnswer = _tryExtractAnswerFromText(allText);
-    }
+    correctAnswer ??= _tryExtractAnswerFromText(allText);
 
     // 推测题型
     String questionType = 'single_choice';
@@ -427,7 +425,7 @@ class DocParserService {
   }
 
   static String _cleanOption(String line, String label) {
-    return line.replaceFirst(RegExp('^\\s*${label}[\.、．\\s]*', caseSensitive: false), '');
+    return line.replaceFirst(RegExp('^\\s*$label[.、．\\s]*', caseSensitive: false), '');
   }
 
   /// 合并行拆回（v1.0.2）：一行包含多个 "X. " 选项时拆成多个选项

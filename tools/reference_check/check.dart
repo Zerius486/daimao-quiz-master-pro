@@ -148,7 +148,7 @@ void main(List<String> args) {
 
   final extra = newList.where((m) => !anyRefMatch(m)).toList()..sort();
   // 噪音过滤：含虚词级常用字才算真实文案
-  final particles = '的了是在与或请已将按用点开有无限';
+  const particles = '的了是在与或请已将按用点开有无限';
   bool real(String s) {
     var p = 0;
     for (final r in s.runes) {

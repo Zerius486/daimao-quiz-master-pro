@@ -109,6 +109,7 @@ void main() {
     )));
     await tester.pumpAndSettle();
 
+    // ignore: deprecated_member_use
     final root = tester.binding.pipelineOwner.semanticsOwner?.rootSemanticsNode;
     expect(root, isNotNull);
     final labels = <String>{};

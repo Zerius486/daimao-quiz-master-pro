@@ -28,7 +28,7 @@ void main() {
       final enc = KeyCrypto.encrypt('secret-api-key');
       final bytes = base64Decode(enc.substring(3));
       bytes[bytes.length - 1] ^= 0x01; // 翻转 tag 的一位
-      final tampered = 'v3:' + base64Encode(bytes);
+      final tampered = 'v3:${base64Encode(bytes)}';
       expect(KeyCrypto.decrypt(tampered), isEmpty);
     });
 

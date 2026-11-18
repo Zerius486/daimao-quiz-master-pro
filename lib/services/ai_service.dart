@@ -1017,7 +1017,7 @@ $detail$marking
       final correct = s['correct'];
       final acc =
           total > 0 ? ((correct / total) * 100).toStringAsFixed(1) : '0';
-      return '共$total题，正确$correct题，正确率${acc}%';
+      return '共$total题，正确$correct题，正确率$acc%';
     }).join('；');
 
     final prompt = '''你是一个学习数据分析助手。根据数据诊断薄弱方向，给出具体建议。
@@ -1050,7 +1050,7 @@ $detail$marking
 
     final prompt = '''你是一个学习助手。为以下刷题结果生成小结：
 
-题量：$total 题 | 正确：$correct | 错误：$wrong | 正确率：${accuracy}% | 用时：${minutes}分${seconds}秒
+题量：$total 题 | 正确：$correct | 错误：$wrong | 正确率：$accuracy% | 用时：$minutes分$seconds秒
 
 用下面格式回复（带emoji）：
 

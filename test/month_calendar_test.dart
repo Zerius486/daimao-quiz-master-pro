@@ -81,7 +81,7 @@ void main() {
             body: MonthCalendar(
               year: now.year,
               month: now.month,
-              dailyTotals: {},
+              dailyTotals: const {},
               onDayTap: (day) => tapped = day,
             ),
           ),

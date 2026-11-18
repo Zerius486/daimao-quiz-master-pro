@@ -50,7 +50,7 @@ class AppState extends ChangeNotifier {
   List<QuestionBank> get banks => _banks;
 
   // 选中用于刷题的题库
-  Set<int> _selectedBankIds = {};
+  final Set<int> _selectedBankIds = {};
   Set<int> get selectedBankIds => _selectedBankIds;
 
   // 刷题状态
@@ -92,11 +92,9 @@ class AppState extends ChangeNotifier {
 
   // 答题历史（按题目索引存储，支持前后翻题）
   final List<AnswerRecord?> _answerHistory = [];
-  bool _skipFSRS = false;
-  bool get skipFSRS => _skipFSRS;
-  void set skipFSRS(bool v) => _skipFSRS = v;
+  bool skipFSRS = false;
   bool _noShuffle = false;
-  void set noShuffle(bool v) => _noShuffle = v;
+  set noShuffle(bool v) => _noShuffle = v;
   bool get hasPrevious => _currentQuestionIndex > 0;
 
   // 单题统计
@@ -315,14 +313,14 @@ class AppState extends ChangeNotifier {
             return;
           }
           await _ingestImagePages(pages, mergedText, fallbackVisionPages,
-              prefix: '${prefix}扫描版 PDF：');
+              prefix: '$prefix扫描版 PDF：');
         }
       } else if (_isImageFile(lower)) {
         _importStatus = '$prefix正在读取图片 $fileName...';
         notifyListeners();
         final bytes = await file.readAsBytes();
         await _ingestImagePages([bytes], mergedText, fallbackVisionPages,
-            prefix: '${prefix}图片识别：');
+            prefix: '$prefix图片识别：');
       } else if (lower.endsWith('.txt') || lower.endsWith('.md')) {
         _importStatus = '$prefix正在读取文本 $fileName...';
         notifyListeners();
@@ -425,7 +423,7 @@ class AppState extends ChangeNotifier {
     if (OcrService.isSupported) {
       final pageTexts = <String>[];
       for (var i = 0; i < pages.length; i++) {
-        _importStatus = '${prefix}识别文字 (${i + 1}/${pages.length} 页)';
+        _importStatus = '$prefix识别文字 (${i + 1}/${pages.length} 页)';
         notifyListeners();
         pageTexts.add(await OcrService.recognizeImage(pages[i]) ?? '');
       }
@@ -1323,7 +1321,7 @@ class AppState extends ChangeNotifier {
     // v1.0.2 设计审查修复：skipFSRS 复位收口到会话生命周期
     // （startQuiz/abortSession/endSession），不再依赖 QuizScreen.dispose 的
     // context.read 复位（Element 存活时机脆弱）
-    _skipFSRS = false;
+    skipFSRS = false;
 
     await _quizService.startQuiz(
       bankIds: _selectedBankIds.toList(),
@@ -1384,7 +1382,7 @@ class AppState extends ChangeNotifier {
     }
 
     // 更新 FSRS 状态（重答路径已由改判逻辑补记，不再重复更新）
-    if (!_skipFSRS && !hasPrev) {
+    if (!skipFSRS && !hasPrev) {
       try {
         await _updateFSRSIfNeeded(submitQid);
       } catch (e) {
@@ -1580,7 +1578,7 @@ class AppState extends ChangeNotifier {
     // 最终结果落库（改造前只有完整结果才会存）。这里改成：继续把流读完，
     // 只是不再刷新 UI，这样回到那道题看到的是完整回答。
     _streamingReply = '';
-    final onCurrentQuestion = () => currentQuestion?.id == qId;
+    onCurrentQuestion() => currentQuestion?.id == qId;
     try {
       await for (final acc
           in _aiService!.streamFollowUp(q, _currentAnalysis!, question)) {
@@ -1797,7 +1795,7 @@ class AppState extends ChangeNotifier {
 
   /// 放弃当前会话（练习退出/未作答退出）：不保存记录、不产生幽灵会话
   Future<void> abortSession() async {
-    _skipFSRS = false;
+    skipFSRS = false;
     await _quizService.abortSession();
     _currentSession = null;
     _quizQuestions = [];
@@ -1811,7 +1809,7 @@ class AppState extends ChangeNotifier {
   /// 保留 DB 会话行（end_time 为空，历史列表显示「未完成」），
   /// 作答记录已逐题落库，下次继续时不丢进度
   Future<void> pauseSession() async {
-    _skipFSRS = false;
+    skipFSRS = false;
     _quizService.pauseSession();
     _quizService.reset();
     _currentSession = null;
@@ -1840,7 +1838,7 @@ class AppState extends ChangeNotifier {
     if (questions.isEmpty) return false;
     final records = await _db.getAnswerRecordsBySession(session.id!);
 
-    _skipFSRS = false;
+    skipFSRS = false;
     _quizService.loadQuiz(questions: questions, session: session);
     _quizQuestions = await _withImages(questions);
     _currentSession = session;
@@ -1949,7 +1947,7 @@ class AppState extends ChangeNotifier {
 
   Future<QuizSession> endSession() async {
     // 会话落库后统计口径变化（末尾统一 bump）
-    _skipFSRS = false;
+    skipFSRS = false;
     _currentSession = await _quizService.endSession();
     _quizService.reset();
     // v1.0.2: 答题完成后续排明天提醒

@@ -453,7 +453,7 @@ void main() {
       expect(ExportStorage.folderOf(p2), dir);
       expect(p1.startsWith(dir), isTrue);
       // 目录里已有的旧导出不再被自动删除（那是用户的东西，不该被清掉）
-      final stale = File('${dir}${Platform.pathSeparator}错题导出_1.json');
+      final stale = File('$dir${Platform.pathSeparator}错题导出_1.json');
       stale.writeAsStringSync('{}');
       await appState.exportErrorQuestionsJson('all');
       expect(stale.existsSync(), isTrue,

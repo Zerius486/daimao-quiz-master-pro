@@ -37,7 +37,7 @@ class ReminderService {
   static const _permissionChannel = MethodChannel('com.flashcard.app/notification');
 
   bool _initialized = false;
-  String _notifiedKeyPrefix = 'reminder_notified_';
+  final String _notifiedKeyPrefix = 'reminder_notified_';
 
   bool get initialized => _initialized;
 
@@ -107,7 +107,7 @@ class ReminderService {
         showNotification: false,
         playSound: false,
       ),
-      foregroundTaskOptions: ForegroundTaskOptions(
+      foregroundTaskOptions: const ForegroundTaskOptions(
         interval: 30000,
         // v1.0.2 设计审查修复（简化保活）：去开机自启。
         // 重启后提醒恢复依赖 ScheduledNotificationBootReceiver 恢复 pending alarm
@@ -168,7 +168,7 @@ class ReminderService {
     if (forceTomorrow || target.isBefore(now)) {
       target = target.add(const Duration(days: 1));
     }
-    final details = const NotificationDetails(
+    const details = NotificationDetails(
       android: AndroidNotificationDetails(
         'flashcard_reminder',
         '每日刷题提醒',

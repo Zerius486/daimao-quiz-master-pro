@@ -34,7 +34,7 @@ void main() {
       // 核心断言：每道题的题干行与答案行必须落在同一块
       for (var n = 1; n <= 10; n++) {
         final titleLine = '$n. 这是第 $n 道题';
-        final answerLine = '答案：B'; // 答案文本相同，用解析行区分题号
+        const answerLine = '答案：B'; // 答案文本相同，用解析行区分题号
         final analysisLine = '这是第 $n 题的解析';
         final titleChunkIdx = chunks.indexWhere((c) => c.contains(titleLine));
         final analysisChunkIdx =
@@ -69,8 +69,8 @@ void main() {
       final joined = chunks.join('\n');
       for (var n = 1; n <= 6; n++) {
         final marker = '这是第 $n 道题的题干';
-        expect('$joined'.split(marker).length - 1, 1,
-            reason: '第 $n 题题干应恰好出现一次（实际 ${'$joined'.split(marker).length - 1}）');
+        expect(joined.split(marker).length - 1, 1,
+            reason: '第 $n 题题干应恰好出现一次（实际 ${joined.split(marker).length - 1}）');
       }
     });
 
@@ -111,7 +111,7 @@ void main() {
     });
 
     test('兼容多种题号格式：1、/（1）/第1题/【第1题】均为边界', () {
-      final text = '1、第一题题干？\n答案：A\n'
+      const text = '1、第一题题干？\n答案：A\n'
           '（2）第二题题干？\n答案：B\n'
           '第3题 第三题题干？\n答案：对\n'
           '【第4题】第四题题干？\n答案：C';

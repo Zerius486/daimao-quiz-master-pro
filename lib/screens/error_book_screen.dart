@@ -326,8 +326,7 @@ class _ErrorBookScreenState extends State<ErrorBookScreen> {
       final accByKp = await appState.getAccuracyByKnowledgePoint(
           bankIds: _selectedBanks.isEmpty ? null : _selectedBanks);
       // v1.0.2 对齐里程碑：各知识点数据：
-      final statsText = '各知识点数据：\n' +
-          _kpStats.map((s) {
+      final statsText = '各知识点数据：\n${_kpStats.map((s) {
             final kp = s['kp'] as String;
             final row =
                 accByKp.where((a) => (a['kp'] as String?) == kp).firstOrNull;
@@ -337,7 +336,7 @@ class _ErrorBookScreenState extends State<ErrorBookScreen> {
                 ? '${(correct / total * 100).toStringAsFixed(1)}%'
                 : '无记录';
             return '**$kp**：错题 ${s['cnt']} 道，正确率 $acc';
-          }).join('\n');
+          }).join('\n')}';
 
       final result = await ai.generateKpAdvice(statsText);
       if (!mounted) return;
@@ -1014,7 +1013,7 @@ class _ErrorBookScreenState extends State<ErrorBookScreen> {
                                     child: Row(
                                       children: [
                                         Text(
-                                          '共 ${_totalCount} 题待复习',
+                                          '共 $_totalCount 题待复习',
                                           style: TextStyle(
                                               fontSize: MaoType.body,
                                               color: ac.textPrimary),
@@ -1645,12 +1644,12 @@ class _AnswerStylePainter extends CustomPainter {
         questionPaint,
       );
       // 答案块：从「题目下方」插值到「页底堆叠」
-      final startX = qX + 10;
-      final endX = qX;
+      const startX = qX + 10;
+      const endX = qX;
       final startY = qy + 12;
       final endY = h - 30 + i * 9.0;
-      final startW = qW * 0.5;
-      final endW = qW * 0.34;
+      const startW = qW * 0.5;
+      const endW = qW * 0.34;
       canvas.drawRRect(
         RRect.fromRectAndRadius(
             Rect.fromLTWH(

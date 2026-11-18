@@ -549,8 +549,9 @@ class _QuizScreenState extends State<QuizScreen> {
                                                     ac.textSecondary,
                                               ),
                                               onPressed: () {
-                                                if (_submitting)
+                                                if (_submitting) {
                                                   return; // 提交期间禁重做
+                                                }
                                                 _selectedOptions.clear();
                                                 for (final c
                                                     in _fillBlankControllers) {

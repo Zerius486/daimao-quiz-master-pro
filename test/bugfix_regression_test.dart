@@ -282,7 +282,7 @@ void main() {
     const v2Legacy = 'v2:RGZ98RP7rJLCUvIURRbYfRvegORpfMyV8eD0397wpai2DU9EY37/+yjR6yupIvGh';
     expect(KeyCrypto.decrypt(v2Legacy), 'sk-test-renaming-123');
     // 篡改检测：v3 密文被改一个字符 → 解出空串
-    final tampered = 'v3:RGZ98RP7rJLCUvIURRbYfRvegORpfMyV8eD0397wpai2DU9EY37/+yjR6yupIvGh';
+    const tampered = 'v3:RGZ98RP7rJLCUvIURRbYfRvegORpfMyV8eD0397wpai2DU9EY37/+yjR6yupIvGh';
     expect(KeyCrypto.decrypt(tampered), isEmpty);
   });
 
@@ -328,7 +328,7 @@ void main() {
     expect(s2.wrongCount, 1);
 
     // 首次未答的题走正常提交（新增记录）
-    final r4 = await quizService.nextQuestion();
+    final r4 = quizService.nextQuestion();
     expect(r4, isTrue);
     final r5 = await quizService.submitAnswer('A');
     expect(r5.isCorrect, isTrue);

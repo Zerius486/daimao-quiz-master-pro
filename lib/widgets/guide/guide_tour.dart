@@ -296,7 +296,7 @@ class _GuideTourState extends State<GuideTour> {
     return Stack(
       children: [
         if (hole == null)
-          Positioned.fill(child: const _ScrimBlock(color: scrim))
+          const Positioned.fill(child: _ScrimBlock(color: scrim))
         else ...[
           // 四块遮罩夹出洞：洞内不铺遮罩 → 高亮处的真实控件照常可点
           AnimatedPositioned(

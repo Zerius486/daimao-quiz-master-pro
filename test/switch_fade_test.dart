@@ -89,9 +89,9 @@ void main() {
       create: (_) => ThemeService(),
       child: MaterialApp(
         theme: ThemeService().themeData,
-        home: MediaQuery(
-          data: const MediaQueryData(disableAnimations: true),
-          child: const Scaffold(
+        home: const MediaQuery(
+          data: MediaQueryData(disableAnimations: true),
+          child: Scaffold(
             body: MJSwitchFade(switchKey: 'x', child: Text('内容')),
           ),
         ),

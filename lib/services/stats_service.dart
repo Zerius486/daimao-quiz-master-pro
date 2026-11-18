@@ -113,9 +113,9 @@ class PeriodStats {
   String get formattedDuration {
     final hours = totalDurationSeconds ~/ 3600;
     final minutes = (totalDurationSeconds % 3600) ~/ 60;
-    if (hours > 0) return '${hours}小时${minutes}分钟';
-    if (minutes > 0) return '${minutes}分钟';
-    return '${totalDurationSeconds}秒';
+    if (hours > 0) return '$hours小时$minutes分钟';
+    if (minutes > 0) return '$minutes分钟';
+    return '$totalDurationSeconds秒';
   }
 
   String get formattedAccuracy => '${accuracy.toStringAsFixed(1)}%';

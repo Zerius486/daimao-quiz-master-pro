@@ -280,51 +280,6 @@ class _WeeklyStatsBoardState extends State<WeeklyStatsBoard> {
   }
 }
 
-class _StatBlock extends StatelessWidget {
-  const _StatBlock({
-    required this.label,
-    required this.value,
-    required this.suffix,
-    required this.ac,
-  });
-
-  final String label;
-  final num value;
-  final String suffix;
-  final AppThemeColors ac;
-
-  @override
-  Widget build(BuildContext context) {
-    final ac = AppThemeColors.of(context);
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(
-            horizontal: MaoSpace.sm, vertical: MaoSpace.sm),
-        decoration: BoxDecoration(
-          color: ac.surfaceAlt,
-          borderRadius: MaoRadius.controlBorder,
-          border: Border.all(color: ac.border, width: MaoLine.width),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 读数滚动落位（等宽数字，滚动期间宽度不跳）
-            MaoAnimatedNumber(value,
-                size: MaoType.display,
-                weight: FontWeight.w700,
-                color: ac.textPrimary,
-                suffix: suffix),
-            const SizedBox(height: MaoSpace.xxs),
-            Text(label,
-                style: MaoType.captionStyle.copyWith(color: ac.textSecondary)),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-
 /// 紧凑指标：数值（等宽）+ 单位 + 灰色标签同排，高度远小于独立数据块。
 class _InlineMetric extends StatelessWidget {
   const _InlineMetric({
